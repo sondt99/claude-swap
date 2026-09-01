@@ -41,6 +41,7 @@ from urllib.parse import parse_qs, urlparse
 from claude_swap import __version__ as CSWAP_VERSION
 from claude_swap.exceptions import ClaudeSwitchError
 from claude_swap.json_output import usage_to_json
+from claude_swap.settings import load_settings
 from claude_swap.switcher import ClaudeAccountSwitcher
 from claude_swap.tui.data import (
     SnapshotSource,
@@ -159,7 +160,7 @@ def set_autoswitch_paused(paused: bool) -> None:
         PAUSE_FILE.unlink(missing_ok=True)
 
 
-def snapshot_to_json(snap) -> dict:
+def snapshot_to_json(snap, threshold: float | None = None) -> dict:
     accounts = [account_to_json(a) for a in snap.accounts]
     ages = [a["ageSeconds"] for a in accounts if a["ageSeconds"] is not None]
     failing = [a for a in accounts if (a["failures"] or 0) >= 2]
@@ -170,6 +171,11 @@ def snapshot_to_json(snap) -> dict:
         "serverTime": time.time(),
         "accounts": accounts,
         "autoswitchPaused": autoswitch_paused(),
+        # The engine's switch line, so a meter can mark where the action is
+        # rather than colouring against invented thresholds. Read per snapshot,
+        # not once at startup: autoswitch-loop.sh re-reads settings.json every
+        # tick, so a `cswap config set` has to reach this page the same way.
+        "threshold": threshold,
         "health": {
             "degraded": bool(failing) or (max_age is not None and max_age > STALE_AFTER_S),
             "failingCount": len(failing),
@@ -212,10 +218,22 @@ class Service:
     def refresh(self, full: bool = False) -> dict:
         with self._lock:
             snap = self.source.take(full=full)
-        payload = snapshot_to_json(snap)
+        payload = snapshot_to_json(snap, self._threshold())
         self._latest = payload
         self._broadcast(payload)
         return payload
+
+    def _threshold(self) -> float | None:
+        """The engine's switch line, or None if settings can't be read.
+
+        Never fatal: the page falls back to plain severity bands without the
+        marker, which is worth strictly more than a dashboard that dies over a
+        cosmetic tick.
+        """
+        try:
+            return load_settings(self.switcher.backup_dir).threshold
+        except Exception:
+            return None
 
     def latest(self) -> dict:
         return self._latest if self._latest is not None else self.refresh()

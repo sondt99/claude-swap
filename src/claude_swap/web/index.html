@@ -6,36 +6,42 @@
 <meta name="referrer" content="no-referrer">
 <title>cswap</title>
 <style>
+  /* Status tokens are the validated fixed status palette (good / warning /
+     serious / critical) — deliberately distinct from the blue accent, which
+     carries *identity* (which account is active), never state. Mixing the two
+     would let a status colour impersonate a series.
+
+     On the light surface `warn` and `serious` sit below 3:1 by design; every
+     place they appear is paired with a shape and a word, so state is never
+     carried by colour alone. */
   :root {
     color-scheme: light dark;
-    --bg: #f6f7f9;
+    --bg: #f9f9f7;
     --panel: #ffffff;
     --panel-2: #fbfbfd;
     --line: #e3e6ec;
     --ink: #14161a;
     --muted: #6b7280;
     --faint: #9aa1ad;
-    --accent: #3b6cf0;
-    --ok: #16a34a;
-    --warn: #d68207;
-    --bad: #dc2626;
-    --shadow: 0 1px 2px rgba(16, 20, 30, .06), 0 4px 14px rgba(16, 20, 30, .05);
-    --radius: 12px;
+    --accent: #2a78d6;
+    --good: #0ca30c;
+    --warn: #fab219;
+    --serious: #ec835a;
+    --crit: #d03b3b;
+    --shadow: 0 1px 2px rgba(16, 20, 30, .05), 0 4px 16px rgba(16, 20, 30, .045);
+    --radius: 14px;
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg: #0e1014;
+      --bg: #0d0d0f;
       --panel: #171a20;
       --panel-2: #1c2027;
       --line: #2a2f38;
       --ink: #e8eaee;
       --muted: #9aa1ad;
       --faint: #6b7280;
-      --accent: #6f92f7;
-      --ok: #34d17a;
-      --warn: #f0a93c;
-      --bad: #f4645f;
-      --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 6px 20px rgba(0, 0, 0, .28);
+      --accent: #3987e5;
+      --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 6px 22px rgba(0, 0, 0, .3);
     }
   }
   * { box-sizing: border-box; }
@@ -43,179 +49,193 @@
     margin: 0;
     background: var(--bg);
     color: var(--ink);
-    font: 14px/1.5 ui-sans-serif, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
     -webkit-font-smoothing: antialiased;
   }
-  .wrap { max-width: 1180px; margin: 0 auto; padding: 24px 20px 64px; }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 22px 20px 64px; }
 
-  header {
-    display: flex; align-items: center; gap: 14px;
-    flex-wrap: wrap; margin-bottom: 22px;
-  }
-  h1 {
-    font-size: 17px; font-weight: 650; margin: 0;
-    letter-spacing: -.01em;
-  }
-  h1 span { color: var(--faint); font-weight: 400; }
-  .dot {
-    width: 7px; height: 7px; border-radius: 50%;
-    background: var(--faint); flex: none;
-    transition: background .25s;
-  }
-  .dot.live { background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 20%, transparent); }
-  .dot.dead { background: var(--bad); }
+  /* ---- header ---- */
+  header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 20px; }
+  h1 { font-size: 15px; font-weight: 650; margin: 0; letter-spacing: -.01em; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); flex: none; transition: background .25s; }
+  .dot.live { background: var(--good); box-shadow: 0 0 0 3px color-mix(in srgb, var(--good) 20%, transparent); }
+  .dot.dead { background: var(--crit); }
   .spacer { flex: 1 1 auto; }
 
   button {
-    font: inherit; font-weight: 500;
-    color: var(--ink); background: var(--panel);
-    border: 1px solid var(--line); border-radius: 8px;
-    padding: 7px 13px; cursor: pointer;
+    font: inherit; font-weight: 500; color: var(--ink); background: var(--panel);
+    border: 1px solid var(--line); border-radius: 9px; padding: 7px 13px; cursor: pointer;
     transition: background .15s, border-color .15s, opacity .15s;
   }
   button:hover:not(:disabled) { background: var(--panel-2); border-color: var(--faint); }
   button:disabled { opacity: .45; cursor: not-allowed; }
+  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
   button.primary:hover:not(:disabled) { filter: brightness(1.08); background: var(--accent); }
-  button.tiny { padding: 4px 9px; font-size: 12px; border-radius: 6px; }
+  button.tiny { padding: 4px 10px; font-size: 12px; border-radius: 7px; }
 
-  .grid {
-    display: grid; gap: 14px;
-    grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
+  /* ---- hero: the one number the page leads with ----
+     The engine switches on the *binding* window — max(5h, 7d) — so that is the
+     figure, not two competing ones. Proportional figures, not tabular: equal
+     digit widths make a number like 81 look loose at display size. */
+  .hero {
+    background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+    box-shadow: var(--shadow); padding: 18px 20px; margin-bottom: 16px;
+    display: flex; align-items: center; gap: 22px; flex-wrap: wrap;
   }
+  .hero-fig { display: flex; align-items: baseline; gap: 3px; flex: none; }
+  .hero-num { font-size: 52px; font-weight: 640; letter-spacing: -.03em; line-height: 1; }
+  .hero-pct { font-size: 20px; font-weight: 550; color: var(--muted); }
+  .hero-body { flex: 1 1 260px; min-width: 0; display: flex; flex-direction: column; gap: 7px; }
+  .hero-label { font-size: 12px; color: var(--muted); }
+  .hero-label b { color: var(--ink); font-weight: 600; }
+  .hero-meta { font-size: 12px; color: var(--faint); }
 
+  /* ---- meter ----
+     Spec: the fill carries severity and the unfilled track is a lighter step of
+     that same ramp, so the state reads across the whole bar even when the fill
+     is only a few percent wide. A neutral grey track would make a 3% critical
+     bar look identical to a 3% healthy one. */
+  .meter { display: flex; flex-direction: column; gap: 5px; }
+  .meter-top { display: flex; align-items: baseline; gap: 8px; font-size: 12px; color: var(--muted); }
+  .meter-top b { color: var(--ink); font-variant-numeric: tabular-nums; font-weight: 600; font-size: 12.5px; }
+  .meter-top .when { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--faint); }
+  .track {
+    position: relative; height: 8px; border-radius: 99px;
+    background: color-mix(in srgb, var(--sev, var(--good)) 15%, var(--panel));
+    overflow: hidden;
+  }
+  .hero .track { height: 10px; }
+  .track > i {
+    display: block; height: 100%; background: var(--sev, var(--good));
+    /* Square at the baseline, 4px rounded at the data end. */
+    border-radius: 0 4px 4px 0;
+    transition: width .55s cubic-bezier(.4, 0, .2, 1), background .3s;
+  }
+  /* The engine's switch line. Without it the reader sees 81% and has no idea
+     whether that is fine or one turn from a swap. A 2px surface-coloured gap on
+     each side keeps it legible where the fill runs underneath it. */
+  .tick {
+    position: absolute; top: -2px; bottom: -2px; width: 2px;
+    background: var(--ink); opacity: .5;
+    border-left: 2px solid var(--panel); border-right: 2px solid var(--panel);
+    box-sizing: content-box; margin-left: -2px;
+  }
+  .pace { font-size: 11.5px; color: var(--muted); }
+
+  /* ---- severity chip: shape + word, never colour alone ---- */
+  .chip {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: 11px; font-weight: 600; letter-spacing: .01em;
+    padding: 1.5px 7px 1.5px 5px; border-radius: 999px; flex: none;
+    background: color-mix(in srgb, var(--sev) 14%, transparent);
+    color: color-mix(in srgb, var(--sev) 72%, var(--ink));
+  }
+  .chip svg { width: 9px; height: 9px; flex: none; fill: var(--sev); }
+
+  /* ---- cards ---- */
+  .grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); }
   .card {
-    background: var(--panel); border: 1px solid var(--line);
-    border-radius: var(--radius); padding: 15px 16px 13px;
-    box-shadow: var(--shadow);
-    display: flex; flex-direction: column; gap: 11px;
+    background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 15px 16px 13px; box-shadow: var(--shadow);
+    display: flex; flex-direction: column; gap: 12px;
     position: relative; overflow: hidden;
+    transition: border-color .2s, opacity .2s;
   }
   .card.active { border-color: var(--accent); }
-  .card.active::before {
-    content: ""; position: absolute; inset: 0 auto 0 0; width: 3px;
-    background: var(--accent);
-  }
-  .card.off { opacity: .62; }
+  .card.active::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 3px; background: var(--accent); }
+  .card.off { opacity: .58; }
 
   .row { display: flex; align-items: baseline; gap: 8px; }
-  .slot {
-    font-variant-numeric: tabular-nums; font-weight: 650;
-    color: var(--faint); font-size: 12px; flex: none;
-    min-width: 16px;
-  }
-  .email {
-    font-weight: 550; letter-spacing: -.01em;
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  }
-  .sub { color: var(--muted); font-size: 12px; display: flex; gap: 7px; flex-wrap: wrap; }
+  .slot { font-variant-numeric: tabular-nums; font-weight: 650; color: var(--faint); font-size: 12px; flex: none; min-width: 15px; }
+  .email { font-weight: 550; letter-spacing: -.01em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sub { color: var(--muted); font-size: 12px; display: flex; gap: 7px; flex-wrap: wrap; align-items: center; margin-top: 3px; }
 
   .badge {
-    font-size: 10.5px; font-weight: 600; letter-spacing: .03em;
-    text-transform: uppercase; padding: 2px 7px; border-radius: 5px;
-    flex: none; line-height: 1.5;
+    font-size: 10.5px; font-weight: 600; letter-spacing: .03em; text-transform: uppercase;
+    padding: 2px 7px; border-radius: 5px; flex: none; line-height: 1.5;
   }
   .badge.on { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
   .badge.off { background: color-mix(in srgb, var(--faint) 20%, transparent); color: var(--muted); }
-  .badge.alias { background: color-mix(in srgb, var(--ok) 16%, transparent); color: var(--ok); text-transform: none; letter-spacing: 0; }
+  .badge.alias { background: color-mix(in srgb, var(--good) 16%, transparent); color: color-mix(in srgb, var(--good) 78%, var(--ink)); text-transform: none; letter-spacing: 0; }
 
-  .meter { display: flex; flex-direction: column; gap: 4px; }
-  .meter-top {
-    display: flex; align-items: baseline; gap: 8px;
-    font-size: 12px; color: var(--muted);
-  }
-  .meter-top b {
-    color: var(--ink); font-variant-numeric: tabular-nums;
-    font-weight: 600; font-size: 12.5px;
-  }
-  .meter-top .when { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--faint); }
-  .bar {
-    height: 6px; border-radius: 99px; overflow: hidden;
-    background: color-mix(in srgb, var(--faint) 22%, transparent);
-  }
-  .bar > i {
-    display: block; height: 100%; border-radius: 99px;
-    background: var(--ok); transition: width .5s ease, background .3s;
-  }
-  .bar > i.w { background: var(--warn); }
-  .bar > i.b { background: var(--bad); }
-  .pace { font-size: 11.5px; color: var(--warn); }
-
+  .meters { display: flex; flex-direction: column; gap: 11px; }
   .state {
-    font-size: 12.5px; color: var(--muted);
-    background: var(--panel-2); border: 1px dashed var(--line);
-    border-radius: 8px; padding: 9px 11px; text-align: center;
+    font-size: 12.5px; color: var(--muted); background: var(--panel-2);
+    border: 1px dashed var(--line); border-radius: 9px; padding: 10px 11px; text-align: center;
   }
-  .scoped { display: flex; gap: 6px; flex-wrap: wrap; font-size: 11.5px; color: var(--faint); }
-  .scoped span { background: var(--panel-2); border: 1px solid var(--line); border-radius: 5px; padding: 1px 6px; }
-
-  .acts { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 2px; }
+  .scoped { display: flex; gap: 6px; flex-wrap: wrap; font-size: 11.5px; color: var(--muted); }
+  .scoped span { background: var(--panel-2); border: 1px solid var(--line); border-radius: 5px; padding: 1px 6px; font-variant-numeric: tabular-nums; }
+  .acts { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 1px; }
   .acts .spacer { flex: 1 1 auto; }
+
+  .fresh { font-variant-numeric: tabular-nums; }
+  .fresh.old { color: color-mix(in srgb, var(--warn) 72%, var(--ink)); }
+  .fresh.bad { color: var(--crit); font-weight: 600; }
+
+  /* ---- banners ---- */
+  .banner { display: none; margin: 0 0 14px; border-radius: 11px; padding: 11px 14px; font-size: 13px; border: 1px solid; }
+  .banner.show { display: block; }
+  .banner b { font-weight: 650; }
+  #health { border-color: var(--crit); background: color-mix(in srgb, var(--crit) 8%, transparent); color: color-mix(in srgb, var(--crit) 82%, var(--ink)); }
+  #health .hint { display: block; margin-top: 6px; font-size: 12px; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; }
+  #paused-note { border-color: var(--warn); background: color-mix(in srgb, var(--warn) 10%, transparent); color: color-mix(in srgb, var(--warn) 78%, var(--ink)); }
+  button#pause.paused {
+    background: color-mix(in srgb, var(--warn) 16%, transparent);
+    border-color: var(--warn); color: color-mix(in srgb, var(--warn) 78%, var(--ink)); font-weight: 650;
+  }
 
   #toast {
     position: fixed; left: 50%; bottom: 24px; transform: translate(-50%, 16px);
-    background: var(--panel); border: 1px solid var(--line);
-    box-shadow: var(--shadow); border-radius: 9px;
-    padding: 10px 15px; max-width: min(620px, 92vw);
+    background: var(--panel); border: 1px solid var(--line); box-shadow: var(--shadow);
+    border-radius: 10px; padding: 10px 15px; max-width: min(620px, 92vw);
     opacity: 0; pointer-events: none; transition: opacity .2s, transform .2s;
     font-size: 13px; z-index: 20;
   }
   #toast.show { opacity: 1; transform: translate(-50%, 0); }
-  #toast.err { border-color: var(--bad); color: var(--bad); }
-  #toast.ok { border-color: var(--ok); }
+  #toast.err { border-color: var(--crit); color: var(--crit); }
+  #toast.ok { border-color: var(--good); }
 
   .empty { color: var(--muted); padding: 40px 0; text-align: center; }
-  .foot { margin-top: 26px; color: var(--faint); font-size: 12px; text-align: center; }
+  .foot { margin-top: 24px; color: var(--faint); font-size: 12px; text-align: center; }
 
-  /* Fetch-health banner. Hidden while healthy; a silent usage-fetch outage
-     makes the engine decide on stale data, and nothing else on this page
-     would show it. */
-  #health {
-    display: none; margin: 0 0 16px;
-    border: 1px solid var(--bad); border-radius: 10px;
-    padding: 11px 14px; font-size: 13px;
-    background: color-mix(in srgb, var(--bad) 9%, transparent);
-    color: var(--bad);
-  }
-  #health.show { display: block; }
-  #health b { font-weight: 650; }
-  #health .hint {
-    display: block; margin-top: 5px; font-size: 12px;
-    color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  }
-  /* Paused is a state you can forget you left on — and forgetting means no
-     rate-limit protection. Make it loud rather than a subtle toggle. */
-  button#pause.paused {
-    background: color-mix(in srgb, var(--warn) 16%, transparent);
-    border-color: var(--warn); color: var(--warn); font-weight: 650;
-  }
-  #paused-note {
-    display: none; margin: 0 0 16px;
-    border: 1px solid var(--warn); border-radius: 10px;
-    padding: 11px 14px; font-size: 13px;
-    background: color-mix(in srgb, var(--warn) 9%, transparent);
-    color: var(--warn);
-  }
-  #paused-note.show { display: block; }
+  /* A refetch must not flash: the previous render is held at reduced opacity
+     rather than torn down, so nothing jumps while a switch is in flight. */
+  .grid.busy, .hero.busy { opacity: .55; transition: opacity .15s; }
 
-  .fresh { font-variant-numeric: tabular-nums; }
-  .fresh.old { color: var(--warn); }
-  .fresh.bad { color: var(--bad); font-weight: 600; }
+  @media (prefers-reduced-motion: reduce) {
+    .track > i, .card, .dot, #toast { transition: none; }
+  }
 </style>
 </head>
 <body>
 <div class="wrap">
   <header>
     <div class="dot" id="dot"></div>
-    <h1>cswap <span id="active">—</span></h1>
+    <h1>cswap</h1>
     <div class="spacer"></div>
     <button id="pause">Auto: —</button>
     <button id="rotate">Rotate</button>
     <button id="avail">Next available</button>
     <button id="best" class="primary">Switch to best</button>
   </header>
-  <div id="health"></div>
-  <div id="paused-note"></div>
+
+  <div class="banner" id="health"></div>
+  <div class="banner" id="paused-note"></div>
+
+  <section class="hero" id="hero" hidden>
+    <div class="hero-fig">
+      <span class="hero-num" id="hero-num">—</span><span class="hero-pct">%</span>
+    </div>
+    <div class="hero-body">
+      <div class="hero-label" id="hero-label"></div>
+      <div class="meter">
+        <div class="track" id="hero-track"><i id="hero-fill" style="width:0%"></i></div>
+      </div>
+      <div class="hero-meta" id="hero-meta"></div>
+    </div>
+  </section>
+
   <div class="grid" id="grid"></div>
   <div class="foot" id="foot"></div>
 </div>
@@ -223,7 +243,7 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
-const grid = $("grid"), dot = $("dot"), toastEl = $("toast");
+const grid = $("grid"), dot = $("dot"), toastEl = $("toast"), hero = $("hero");
 let busy = false;
 
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c =>
@@ -234,6 +254,12 @@ function toast(msg, kind) {
   toastEl.className = "show " + (kind || "");
   clearTimeout(toast._t);
   toast._t = setTimeout(() => { toastEl.className = ""; }, 4200);
+}
+
+function setDisabled(v) {
+  document.querySelectorAll("button").forEach(b => { b.disabled = v; });
+  grid.classList.toggle("busy", v);
+  hero.classList.toggle("busy", v);
 }
 
 async function post(path, body) {
@@ -256,86 +282,234 @@ async function post(path, body) {
   }
 }
 
-function setDisabled(v) {
-  document.querySelectorAll("button").forEach(b => { b.disabled = v; });
+// ---- severity ----------------------------------------------------------
+// Anchored to the engine's own switch line rather than invented cut-offs, so
+// the colour changes exactly where the behaviour does. Falls back to 90 (the
+// shipped default) if settings could not be read.
+let THRESHOLD = 90;
+
+const SEV = {
+  good:    { v: "--good",    word: "" },
+  warn:    { v: "--warn",    word: "gần ngưỡng" },
+  serious: { v: "--serious", word: "sắp chuyển" },
+  crit:    { v: "--crit",    word: "vượt ngưỡng" },
+};
+
+// Distinct shapes, not just distinct hues — the light-mode warning and serious
+// steps sit below 3:1, so the shape and the word carry the state.
+const SHAPE = {
+  warn: '<svg viewBox="0 0 10 10" aria-hidden="true"><path d="M5 0 10 9H0z"/></svg>',
+  serious: '<svg viewBox="0 0 10 10" aria-hidden="true"><path d="M5 0l5 5-5 5-5-5z"/></svg>',
+  crit: '<svg viewBox="0 0 10 10" aria-hidden="true"><path d="M3 0h4l3 3v4l-3 3H3L0 7V3z"/></svg>',
+};
+
+function sevOf(pct) {
+  const t = THRESHOLD;
+  if (pct >= t) return "crit";
+  if (pct >= t - 5) return "serious";
+  if (pct >= t - 15) return "warn";
+  return "good";
 }
 
-const cls = (p) => p >= 85 ? "b" : p >= 60 ? "w" : "";
+const chip = (s) => SEV[s].word
+  ? `<span class="chip" style="--sev:var(${SEV[s].v})">${SHAPE[s]}${esc(SEV[s].word)}</span>` : "";
 
 const ago = (s) => s < 60 ? `${Math.round(s)}s`
   : s < 3600 ? `${Math.round(s / 60)}m` : `${(s / 3600).toFixed(1)}h`;
 
-// Data age is shown always, not just once it is alarming: the number a
-// decision was made on matters as much as the decision. Red when fetches are
-// actually failing, amber past the slowest scheduled cadence (600s + slack).
-function freshness(a) {
+const clampPct = (v) => Math.max(0, Math.min(100, Number(v) || 0));
+
+// ---- meter -------------------------------------------------------------
+// Built once per card and then *patched*, never re-created. Replacing the node
+// each tick is what silently killed the width transition in the old page: a
+// fresh element has no previous width to animate from.
+function makeMeter(label) {
+  const el = document.createElement("div");
+  el.className = "meter";
+  el.innerHTML =
+    `<div class="meter-top"><span>${esc(label)}</span><b></b><span class="chip-slot"></span>` +
+    `<span class="when"></span></div>` +
+    `<div class="track"><i style="width:0%"></i><span class="tick" hidden></span></div>` +
+    `<div class="pace" hidden></div>`;
+  return {
+    el,
+    val: el.querySelector("b"),
+    chipSlot: el.querySelector(".chip-slot"),
+    when: el.querySelector(".when"),
+    track: el.querySelector(".track"),
+    fill: el.querySelector("i"),
+    tick: el.querySelector(".tick"),
+    pace: el.querySelector(".pace"),
+  };
+}
+
+function paintMeter(m, w, showTick) {
+  if (!w) { m.el.hidden = true; return; }
+  m.el.hidden = false;
+  const pct = clampPct(w.pct);
+  const s = sevOf(pct);
+  m.track.style.setProperty("--sev", `var(${SEV[s].v})`);
+  m.fill.style.width = pct + "%";
+  m.val.textContent = pct + "%";
+  m.chipSlot.innerHTML = chip(s);
+  m.when.textContent = w.countdown
+    ? `${w.countdown}${w.clock ? " · " + w.clock : ""}` : "";
+  // The tick only rides the binding window; on a window the engine does not
+  // gate on it would assert a rule that is not there.
+  if (showTick && THRESHOLD > 0 && THRESHOLD < 100) {
+    m.tick.hidden = false;
+    m.tick.style.left = THRESHOLD + "%";
+    m.tick.title = `ngưỡng chuyển ${THRESHOLD}%`;
+  } else {
+    m.tick.hidden = true;
+  }
+  const showPace = w.aheadOfPace && w.expectedPct != null;
+  m.pace.hidden = !showPace;
+  if (showPace) m.pace.textContent = `vượt nhịp — dự kiến ${w.expectedPct}%`;
+}
+
+// ---- cards -------------------------------------------------------------
+const cards = new Map();   // slot number -> refs
+
+function makeCard(num) {
+  const el = document.createElement("article");
+  el.className = "card";
+  el.dataset.slot = num;
+  el.innerHTML =
+    `<div>` +
+      `<div class="row"><span class="slot"></span><span class="email"></span></div>` +
+      `<div class="sub"></div>` +
+    `</div>` +
+    `<div class="meters"></div>` +
+    `<div class="state" hidden></div>` +
+    `<div class="scoped" hidden></div>` +
+    `<div class="acts">` +
+      `<button class="tiny primary" data-act="switch" hidden>Switch</button>` +
+      `<button class="tiny" data-act="alias">Alias</button>` +
+      `<div class="spacer"></div>` +
+      `<button class="tiny" data-act="toggle"></button>` +
+    `</div>`;
+  const meters = el.querySelector(".meters");
+  const m5 = makeMeter("5h"), m7 = makeMeter("7d");
+  meters.append(m5.el, m7.el);
+  const refs = {
+    el,
+    slot: el.querySelector(".slot"),
+    email: el.querySelector(".email"),
+    sub: el.querySelector(".sub"),
+    m5, m7,
+    state: el.querySelector(".state"),
+    scoped: el.querySelector(".scoped"),
+    bSwitch: el.querySelector('[data-act="switch"]'),
+    bAlias: el.querySelector('[data-act="alias"]'),
+    bToggle: el.querySelector('[data-act="toggle"]'),
+  };
+  [refs.bSwitch, refs.bAlias, refs.bToggle].forEach(b => { b.dataset.id = num; });
+  return refs;
+}
+
+function freshHTML(a) {
   if (a.ageSeconds == null) return "";
   const failing = (a.failures || 0) >= 2;
   const k = failing ? "bad" : a.ageSeconds > 900 ? "old" : "";
   const err = failing ? ` · ${esc(a.lastError || "fetch failing")}` : "";
-  return `<span class="fresh ${k}">· ${esc(ago(a.ageSeconds))} ago${err}</span>`;
+  return `<span class="fresh ${k}">· ${esc(ago(a.ageSeconds))} trước${err}</span>`;
 }
 
-function meter(label, w) {
-  if (!w) return "";
-  const pct = Math.max(0, Math.min(100, Number(w.pct) || 0));
-  const when = w.countdown ? `${esc(w.countdown)}${w.clock ? " · " + esc(w.clock) : ""}` : "";
-  const pace = (w.aheadOfPace && w.expectedPct != null)
-    ? `<div class="pace">vượt nhịp — dự kiến ${esc(w.expectedPct)}%</div>` : "";
-  return `<div class="meter">
-    <div class="meter-top">${label} <b>${pct}%</b><span class="when">${when}</span></div>
-    <div class="bar"><i class="${cls(pct)}" style="width:${pct}%"></i></div>
-    ${pace}
-  </div>`;
-}
+function paintCard(c, a) {
+  c.el.classList.toggle("active", !!a.isActive);
+  c.el.classList.toggle("off", !!a.disabled);
+  c.slot.textContent = a.number;
+  c.email.textContent = a.email;
+  c.email.title = a.email;
 
-function card(a) {
-  const id = esc(a.number);
-  const cl = ["card", a.isActive ? "active" : "", a.disabled ? "off" : ""].join(" ");
-  const badges = [
-    a.isActive ? '<span class="badge on">active</span>' : "",
-    a.disabled ? '<span class="badge off">disabled</span>' : "",
-    a.alias ? `<span class="badge alias">${esc(a.alias)}</span>` : "",
-  ].join("");
+  c.sub.innerHTML =
+    `<span>${esc(a.orgTag)}</span>` +
+    (a.kind === "api_key" ? `<span>· api key</span>` : "") +
+    freshHTML(a) +
+    (a.isActive ? `<span class="badge on">active</span>` : "") +
+    (a.disabled ? `<span class="badge off">disabled</span>` : "") +
+    (a.alias ? `<span class="badge alias">${esc(a.alias)}</span>` : "");
 
-  let body;
-  if (a.usage) {
-    body = meter("5h", a.usage.fiveHour) + meter("7d", a.usage.sevenDay);
-    const sc = (a.usage.scoped || []).filter(s => s.pct > 0);
-    if (sc.length) {
-      body += `<div class="scoped">${sc.map(s =>
-        `<span>${esc(s.name)} ${esc(s.pct)}%</span>`).join("")}</div>`;
-    }
-  } else {
-    body = `<div class="state">${esc(a.sentinelLabel || a.lastError || "chưa có dữ liệu")}</div>`;
+  const u = a.usage;
+  // The engine gates on max(5h, 7d), so the tick belongs on whichever of the
+  // two is currently binding — marking both would imply two independent lines.
+  const p5 = u && u.fiveHour ? clampPct(u.fiveHour.pct) : -1;
+  const p7 = u && u.sevenDay ? clampPct(u.sevenDay.pct) : -1;
+  paintMeter(c.m5, u && u.fiveHour, p5 >= p7);
+  paintMeter(c.m7, u && u.sevenDay, p7 > p5);
+
+  const hasUsage = !!(u && (u.fiveHour || u.sevenDay));
+  c.state.hidden = hasUsage;
+  if (!hasUsage) c.state.textContent = a.sentinelLabel || a.lastError || "chưa có dữ liệu";
+
+  const sc = (u && u.scoped || []).filter(s => s.pct > 0);
+  c.scoped.hidden = !sc.length;
+  if (sc.length) {
+    c.scoped.innerHTML = sc.map(s =>
+      `<span>${esc(s.name)} ${esc(s.pct)}%</span>`).join("");
   }
 
-  return `<div class="${cl}">
-    <div>
-      <div class="row">
-        <span class="slot">${id}</span>
-        <span class="email" title="${esc(a.email)}">${esc(a.email)}</span>
-      </div>
-      <div class="sub">
-        <span>${esc(a.orgTag)}</span>
-        ${a.kind === "api_key" ? "<span>· api key</span>" : ""}
-        ${freshness(a)}
-        ${badges}
-      </div>
-    </div>
-    ${body}
-    <div class="acts">
-      ${a.isActive || !a.switchable ? ""
-        : `<button class="tiny primary" data-act="switch" data-id="${id}">Switch</button>`}
-      <button class="tiny" data-act="alias" data-id="${id}">Alias</button>
-      <div class="spacer"></div>
-      <button class="tiny" data-act="toggle" data-id="${id}" data-on="${a.disabled ? "0" : "1"}">
-        ${a.disabled ? "Enable" : "Disable"}
-      </button>
-    </div>
-  </div>`;
+  c.bSwitch.hidden = !!a.isActive || !a.switchable;
+  c.bToggle.textContent = a.disabled ? "Enable" : "Disable";
+  c.bToggle.dataset.on = a.disabled ? "0" : "1";
 }
 
+function renderCards(acc) {
+  if (!acc.length) {
+    cards.clear();
+    grid.innerHTML =
+      '<div class="empty">Chưa có account nào được quản lý. Dùng <code>cswap add</code> để thêm.</div>';
+    return;
+  }
+  const seen = new Set();
+  acc.forEach((a, i) => {
+    seen.add(a.number);
+    let c = cards.get(a.number);
+    if (!c) { c = makeCard(a.number); cards.set(a.number, c); }
+    paintCard(c, a);
+    // Keep DOM order in step with the payload without tearing anything down.
+    if (grid.children[i] !== c.el) grid.insertBefore(c.el, grid.children[i] || null);
+  });
+  for (const [num, c] of cards) {
+    if (!seen.has(num)) { c.el.remove(); cards.delete(num); }
+  }
+}
+
+// ---- hero --------------------------------------------------------------
+function renderHero(active) {
+  const u = active && active.usage;
+  if (!u || (!u.fiveHour && !u.sevenDay)) { hero.hidden = true; return; }
+  hero.hidden = false;
+  const p5 = u.fiveHour ? clampPct(u.fiveHour.pct) : 0;
+  const p7 = u.sevenDay ? clampPct(u.sevenDay.pct) : 0;
+  const pct = Math.max(p5, p7);
+  const which = p5 >= p7 ? "5h" : "7d";
+  const s = sevOf(pct);
+
+  $("hero-num").textContent = pct;
+  $("hero-track").style.setProperty("--sev", `var(${SEV[s].v})`);
+  $("hero-fill").style.width = pct + "%";
+
+  const tick = $("hero-track").querySelector(".tick") || (() => {
+    const t = document.createElement("span");
+    t.className = "tick";
+    $("hero-track").appendChild(t);
+    return t;
+  })();
+  tick.style.left = THRESHOLD + "%";
+  tick.hidden = !(THRESHOLD > 0 && THRESHOLD < 100);
+
+  $("hero-label").innerHTML =
+    `Đang dùng <b>${esc(active.alias || active.email)}</b> ` +
+    `<span class="slot">#${esc(active.number)}</span> ${chip(s)}`;
+  const head = Math.max(0, THRESHOLD - pct);
+  $("hero-meta").textContent = pct >= THRESHOLD
+    ? `Cửa sổ ${which} đã vượt ngưỡng ${THRESHOLD}% — engine sẽ chuyển ở tick kế tiếp.`
+    : `Cửa sổ ${which} đang chi phối · còn ${head.toFixed(0)}% nữa tới ngưỡng chuyển ${THRESHOLD}%.`;
+}
+
+// ---- banners -----------------------------------------------------------
 let paused = false;
 
 function renderPause(p) {
@@ -343,7 +517,7 @@ function renderPause(p) {
   const b = $("pause"), note = $("paused-note");
   b.textContent = paused ? "Auto: OFF" : "Auto: ON";
   b.className = paused ? "paused" : "";
-  note.className = paused ? "show" : "";
+  note.classList.toggle("show", paused);
   if (paused) {
     note.innerHTML =
       "<b>Autoswitch đang tắt.</b> Account bạn chọn sẽ đứng yên, " +
@@ -352,36 +526,34 @@ function renderPause(p) {
   }
 }
 
-function render(s) {
-  if (s.error) { toast(s.error, "err"); return; }
-  renderHealth(s.health);
-  renderPause(s.autoswitchPaused);
-  const acc = s.accounts || [];
-  const active = acc.find(a => a.isActive);
-  $("active").textContent = active ? `· ${active.alias || active.email}` : "· no active account";
-  grid.innerHTML = acc.length
-    ? acc.map(card).join("")
-    : '<div class="empty">Chưa có account nào được quản lý. Dùng <code>cswap add</code> để thêm.</div>';
-  const t = new Date((s.takenAt || 0) * 1000);
-  $("foot").textContent = acc.length
-    ? `${acc.length} account · cập nhật ${t.toLocaleTimeString()}` : "";
-}
-
 // Usage fetches can fail silently for hours — the engine keeps switching on
 // last-good data, just increasingly late. Say so loudly, and name the check
 // that distinguishes a TLS-trust problem from a real network one.
 function renderHealth(h) {
   const el = $("health");
-  if (!h || !h.degraded) { el.className = ""; return; }
+  if (!h || !h.degraded) { el.classList.remove("show"); return; }
   const age = h.maxAgeSeconds != null ? ago(h.maxAgeSeconds) : "?";
   el.innerHTML =
-    `<b>Usage fetch đang lỗi</b> — ${h.failingCount} account, ` +
+    `<b>Usage fetch đang lỗi</b> — ${esc(h.failingCount)} account, ` +
     `dữ liệu cũ nhất ${esc(age)}${h.lastError ? ` · ${esc(h.lastError)}` : ""}. ` +
     `Engine vẫn switch, nhưng dựa trên số liệu lỗi thời nên sẽ trễ.` +
     `<span class="hint">docker exec cswap-auto /usr/local/bin/docker-entrypoint.sh python -c ` +
     `"import urllib.request;urllib.request.urlopen('https://api.anthropic.com/v1/models',timeout=10)"` +
     `\n→ HTTP 401 = TLS ổn (lỗi mạng thật) · CERTIFICATE_VERIFY_FAILED = thiếu CA bundle</span>`;
-  el.className = "show";
+  el.classList.add("show");
+}
+
+function render(s) {
+  if (s.error) { toast(s.error, "err"); return; }
+  if (typeof s.threshold === "number" && s.threshold > 0) THRESHOLD = s.threshold;
+  renderHealth(s.health);
+  renderPause(s.autoswitchPaused);
+  const acc = s.accounts || [];
+  renderHero(acc.find(a => a.isActive));
+  renderCards(acc);
+  const t = new Date((s.takenAt || 0) * 1000);
+  $("foot").textContent = acc.length
+    ? `${acc.length} account · cập nhật ${t.toLocaleTimeString()}` : "";
 }
 
 grid.addEventListener("click", (e) => {
