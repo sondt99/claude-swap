@@ -21,9 +21,14 @@ COPY --from=ghcr.io/astral-sh/uv:0.9.18 /uv /usr/local/bin/uv
 # Build the venv at its FINAL path. A venv records absolute paths in its
 # scripts' shebangs, so building at /src/.venv and copying to /opt would leave
 # every console script pointing at an interpreter that does not exist.
+# UV_PYTHON_PREFERENCE pins the interpreter source. uv's default preference is
+# `managed`; today it picks the system python, but a uv-managed one would live
+# under /root/.local/share/uv/python, which the runtime stage never copies --
+# leaving /opt/cswap/bin/python a dangling symlink that only fails at run time.
 ENV UV_PROJECT_ENVIRONMENT=/opt/cswap \
     UV_COMPILE_BYTECODE=1 \
-    UV_LINK_MODE=copy
+    UV_LINK_MODE=copy \
+    UV_PYTHON_PREFERENCE=only-system
 
 WORKDIR /src
 # Dependency layer first: it changes far less often than the source, so editing
@@ -39,18 +44,22 @@ RUN uv sync --locked --no-dev --no-editable
 
 FROM python:3.12-slim
 
-# ca-certificates is NOT optional. claude-swap reaches api.anthropic.com over
-# TLS to read usage, and a base image without a CA bundle fails every fetch
-# with CERTIFICATE_VERIFY_FAILED. cswap reports that as a generic "network"
-# error, so the store just backs off and keeps serving stale usage — the
-# engine then decides on data that is many minutes old and switches late.
-# Measured when this was missing: usage aged to ~15 minutes and fetch failures
-# went from ~2/hour to ~31/hour.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+# CA certificates matter enormously here — claude-swap reaches
+# api.anthropic.com over TLS, and without a bundle every usage fetch fails as
+# CERTIFICATE_VERIFY_FAILED, which cswap reports as a generic "network" error;
+# the store then serves stale usage and the engine switches late. (Measured on
+# a base that lacked them: usage aged to ~15 min, failures 2/hour -> 31/hour.)
+# python:3.12-slim already ships ca-certificates, so no apt layer is needed;
+# this comment stays as the reason NOT to move to a barer base.
 
 COPY --from=builder /opt/cswap /opt/cswap
+
+# The official python:*-slim images ship the stdlib with every .pyc deleted, and
+# UV_COMPILE_BYTECODE only covers /opt/cswap. Combined with `read_only: true`
+# that means each process recompiles ~118 stdlib modules and cannot cache them:
+# measured 363-443ms per invocation read-only vs ~100ms once warm. At a 15s
+# tick that is ~28 min/day of avoidable CPU, and a 4x slower host shim.
+RUN python -m compileall -q /usr/local/lib/python3.12 >/dev/null 2>&1 || true
 ENV PATH="/opt/cswap/bin:${PATH}"
 
 COPY deploy/docker-entrypoint.sh deploy/autoswitch-loop.sh /usr/local/bin/

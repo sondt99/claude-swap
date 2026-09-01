@@ -30,6 +30,23 @@ if [ ! -d "${HOME}" ]; then
   exit 1
 fi
 
+# The directory check alone does not catch the failure it was written for: a
+# typo in HOST_HOME makes Docker AUTO-CREATE the bind source, so an empty
+# root-owned directory mounts cleanly, the check passes, and cswap reports "no
+# accounts are managed yet" from a green, healthy container. Look for the store
+# itself instead.
+STORE="${XDG_DATA_HOME:-${HOME}/.local/share}/claude-swap"
+if [ ! -d "${STORE}" ] && [ ! -d "${HOME}/.claude" ] && [ ! -f "${HOME}/.claude.json" ]; then
+  echo "cswap: '${HOME}' is mounted but contains no Claude state." >&2
+  echo "  Expected one of:" >&2
+  echo "    ${STORE}" >&2
+  echo "    ${HOME}/.claude" >&2
+  echo "    ${HOME}/.claude.json" >&2
+  echo "  A typo in HOST_HOME makes Docker create an empty directory and mount" >&2
+  echo "  that, which looks healthy and serves an empty dashboard. Refusing." >&2
+  exit 1
+fi
+
 PATH="${VENV}:${PATH}"
 export PATH
 

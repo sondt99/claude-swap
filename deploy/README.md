@@ -13,8 +13,11 @@ is bind-mounted — so claude-swap does not need to be installed on the host at
 all, and `docker compose up` can never pick up whatever version happened to be
 sitting there.
 
-Dependencies come from `uv.lock` (`uv sync --locked`), so the image is
-reproducible rather than resolving fresh from PyPI at build time.
+Python dependencies come from `uv.lock` (`uv sync --locked`, 67 hashes), so the
+dependency set is pinned rather than resolved fresh from PyPI at build time.
+The base image and uv are pinned by *tag*, not digest, so two builds months
+apart can still differ in interpreter patch level and OS packages — the
+dependency set is reproducible, the whole image is not.
 
 From this directory:
 
@@ -61,18 +64,24 @@ account, so most ticks are free.
 
 In the UI: switch to a slot, rotate, next-available, switch-to-best,
 enable/disable, set alias. **Not** in the UI: `cswap add` (needs the interactive
-OAuth login) and `cswap run` (sets env for one terminal — a web page cannot set
-your shell's environment). Use the CLI for those.
+OAuth login — it still works through the shim, since it captures the already
+logged-in host credentials rather than opening a browser flow).
+
+`cswap run` does **not** work in this deployment at all: it execs the `claude`
+binary, which is installed on your host and not in this image. Use `claude`
+directly, switching the active account first.
 
 ## Running cswap inside the container
 
-`docker exec` bypasses `ENTRYPOINT`, so the venv is not on `PATH` and plain
-`docker exec cswap-web cswap list` fails with `not found`. Go through the
-entrypoint:
+The image sets `ENV PATH="/opt/cswap/bin:$PATH"`, which `docker exec` inherits,
+so this works directly:
 
-    docker exec cswap-web /usr/local/bin/docker-entrypoint.sh cswap list
+    docker exec cswap-web cswap list
 
-Or just run `cswap` on the host — same install, same store.
+Prefer the host shim (`deploy/cswap-host`, above) for interactive use: a raw
+`docker exec` starts in `/` and carries the *container's* environment, so
+relative paths, `XDG_DATA_HOME` and `TERM` all behave differently from a native
+install. The shim restores those.
 
 ## Autoswitch
 
@@ -119,13 +128,20 @@ still reported the container as healthy.
 ### Pause
 
 The **Auto: ON / OFF** button in the dashboard holds the engine off so a
-hand-picked account stays active. It works by touching `~/.cswap-web-paused`;
-the tick loop skips while that file exists. A file rather than a flag because
-the engine runs in a different container — both see it through the shared home
-mount. Equivalent from a shell:
+hand-picked account stays active. It works by touching `.paused` in the backup
+root; `cswap auto` consults it every tick, before polling. A file rather than an
+in-process flag because the dashboard and the engine can be different
+containers — both see it through the shared home mount.
 
-    touch ~/.cswap-web-paused     # pause
-    rm ~/.cswap-web-paused        # resume
+It lives in the backup root, not `$HOME`, so it is scoped per profile
+(`XDG_DATA_HOME`) rather than pausing every profile on the box. Equivalent from
+a shell:
+
+    touch "${XDG_DATA_HOME:-$HOME/.local/share}/claude-swap/.paused"   # pause
+    rm    "${XDG_DATA_HOME:-$HOME/.local/share}/claude-swap/.paused"   # resume
+
+(An earlier version used `~/.cswap-web-paused`. That path is no longer read by
+anything — touching it pauses nothing.)
 
 While paused you have **no rate-limit protection**, so the dashboard shows a
 standing amber banner rather than a quiet toggle state.
@@ -242,9 +258,9 @@ Healthy looks like `fail=0` and `age` cycling under ~300s. If `fail` is nonzero
 and `age` keeps climbing past ten minutes, fetches are failing and the store is
 serving stale data behind a backoff.
 
-**The cause seen here was a missing CA bundle in the image.** `debian:12-slim`
-ships without `ca-certificates`, so every HTTPS call to `api.anthropic.com`
-died with `CERTIFICATE_VERIFY_FAILED` — which cswap logs as a generic
+**The cause seen here was a missing CA bundle in the image.** The image was
+then based on `debian:12-slim`, which ships without `ca-certificates`, so every
+HTTPS call to `api.anthropic.com` died with `CERTIFICATE_VERIFY_FAILED` — which cswap logs as a generic
 `network` error, giving no hint that TLS trust is the problem. Fetch failures
 went from ~2/hour to ~31/hour and usage aged to ~20 minutes. The Dockerfile now
 installs `ca-certificates`; don't remove it. To confirm TLS from inside a
@@ -274,7 +290,7 @@ below 100: the margin covers the polling blind spot.
 |---|---|
 | `Dockerfile` | multi-stage: builds claude-swap from source into `/opt/cswap` |
 | `docker-entrypoint.sh` | puts the in-image venv on `PATH`, fails fast if the build or the mount is wrong |
-| `autoswitch-loop.sh` | `cswap auto --once` on a timer, with a pause gate |
+| `autoswitch-loop.sh` | `cswap auto --once` on a timer; pausing is the engine's job, not this script's |
 | `docker-compose.yml` | `web` (dashboard) + `auto` (autoswitch engine) |
 | `.env.example` | template; copy to `.env` and fill in |
 | `cswap-host` | host shim: routes `cswap` into the running container |

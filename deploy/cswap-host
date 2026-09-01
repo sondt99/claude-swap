@@ -1,33 +1,146 @@
 #!/usr/bin/env bash
 # `cswap` on the host, without installing claude-swap on the host.
 #
-# The code lives only in the image now, so this routes the CLI into the running
-# web container. That container already has the credential store bind-mounted
-# at its real path and runs as your uid, so files it writes are indistinguishable
-# from ones a host install would have written.
+# The code lives only in the image, so this routes the CLI into the running web
+# container. That container has the credential store bind-mounted at its real
+# path and runs as your uid, so files it writes are indistinguishable from ones
+# a host install would have written.
 #
 # Install:  ln -sf "$PWD/deploy/cswap-host" ~/.local/bin/cswap
+#
+# `docker exec` is NOT transparent, and each difference below was a real defect:
+# the working directory, the environment, signal delivery, and which streams get
+# a pty all have to be restored deliberately.
 set -euo pipefail
 
 CONTAINER="${CSWAP_CONTAINER:-cswap-web}"
 
-if ! docker inspect -f '{{.State.Running}}' "${CONTAINER}" 2>/dev/null | grep -q true; then
-  cat >&2 <<EOF
-cswap: container '${CONTAINER}' is not running.
+# 125, not 1: the engine uses 1 for its own ERROR outcome, so a wrapper doing
+# `cswap auto --once; case $? in 1) ... esac` must not confuse "the engine
+# errored" with "the shim could not reach Docker".
+SHIM_ERR=125
 
-  The CLI lives in the image now, not on this host. Start the stack first:
+fail() { printf 'cswap: %s\n' "$1" >&2; exit "${SHIM_ERR}"; }
 
+if ! docker info >/dev/null 2>&1; then
+  fail "cannot talk to the Docker daemon.
+  Either it is not running, or you are not in the 'docker' group.
+  (This is distinct from the container being down.)"
+fi
+
+state=$(docker inspect -f '{{.State.Status}}' "${CONTAINER}" 2>/dev/null || echo missing)
+case "${state}" in
+  running) ;;
+  # A paused container passes a naive .State.Running check and then blocks the
+  # exec forever, which looks like a hang with no explanation.
+  paused)  fail "container '${CONTAINER}' is paused. Run: docker unpause ${CONTAINER}" ;;
+  missing) fail "container '${CONTAINER}' does not exist.
+  The CLI lives in the image, not on this host. Start the stack:
       cd <repo>/deploy && docker compose up -d
+  (Set CSWAP_CONTAINER to use a different container name.)" ;;
+  *)       fail "container '${CONTAINER}' is '${state}', not running." ;;
+esac
 
-  (Set CSWAP_CONTAINER to use a different container name.)
-EOF
-  exit 1
+# -- working directory -------------------------------------------------------
+# An exec starts at / regardless of where you invoked this. That silently
+# breaks every cwd-sensitive command: `cswap map` would record "/" as the
+# mapped directory, and "/" is an ancestor of everything, so afterwards EVERY
+# directory resolves to that account. Relative paths (`cswap export ./b.json`)
+# would land on the container's read-only rootfs instead of your cwd.
+cwd=${PWD}
+case "${cwd}/" in
+  "${HOME}"/*) ;;
+  *) fail "refusing to run from '${cwd}'.
+  Only paths under ${HOME} are visible inside the container, so a relative
+  path here would resolve somewhere else entirely. cd under your home first." ;;
+esac
+
+# -- environment -------------------------------------------------------------
+# `docker exec` inherits the CONTAINER's environment, not yours. Without this,
+# XDG_DATA_HOME is dropped -- which is claude-swap's profile-scoping mechanism,
+# so a work profile would silently read and write the default store -- while
+# the web service's own CSWAP_WEB_TOKEN and CSWAP_WEB_NO_AUTH leak in.
+env_args=()
+for v in XDG_DATA_HOME CLAUDE_CONFIG_DIR CLAUDE_SECURESTORAGE_CONFIG_DIR \
+         NO_COLOR FORCE_COLOR TERM COLUMNS LINES; do
+  if [ -n "${!v-}" ]; then env_args+=( -e "${v}=${!v}" ); fi
+done
+# Explicitly blank rather than inherited: these belong to the web service.
+env_args+=( -e "CSWAP_WEB_TOKEN=" -e "CSWAP_WEB_NO_AUTH=" )
+
+# -- interactive path --------------------------------------------------------
+# fd 2 is part of the test on purpose. With only 0 and 1 checked, an invocation
+# whose stderr is redirected still gets -t, and a pty merges stderr INTO
+# stdout: `cswap ... 2>errors.log` then logs nothing and the error appears on
+# stdout instead.
+if [ -t 0 ] && [ -t 1 ] && [ -t 2 ]; then
+  exec docker exec -it -w "${cwd}" "${env_args[@]}" "${CONTAINER}" cswap "$@"
 fi
 
-# -t only when stdin is a terminal: with it unconditionally, piping or
-# redirecting output ("cswap list --json > f") gets CRLF-mangled and fails in
-# scripts; without it, interactive prompts have no terminal to draw on.
-if [ -t 0 ] && [ -t 1 ]; then
-  exec docker exec -it "${CONTAINER}" cswap "$@"
+# -- non-interactive path, with signal relay ---------------------------------
+# `docker exec` without -t does not forward signals. Left alone, Ctrl-C during
+# `cswap switch | tee log` returned 0 while the switch ran to completion inside
+# the container -- a cancelled-but-completed credential write reported as
+# success. Tag this exec so its in-container process can be found and signalled.
+SHIM_TAG="cswap-shim-$$-${RANDOM}"
+
+relay() {
+  local sig=$1
+  # pkill cannot match on environment, so scan /proc for our tag.
+  docker exec "${CONTAINER}" sh -c '
+    for p in /proc/[0-9]*; do
+      if grep -qz "CSWAP_SHIM_TAG='"${SHIM_TAG}"'" "$p/environ" 2>/dev/null; then
+        kill -'"${sig}"' "${p#/proc/}" 2>/dev/null || true
+      fi
+    done' >/dev/null 2>&1 || true
+}
+
+docker exec -i -w "${cwd}" "${env_args[@]}" -e "CSWAP_SHIM_TAG=${SHIM_TAG}" \
+  "${CONTAINER}" cswap "$@" &
+child=$!
+
+# Exit non-zero on interrupt even if the relay fails to land: reporting 0 for a
+# cancelled command is the part that actually misleads a caller.
+# Interrupt handling, and an honest account of what it does and does not do.
+#
+# The danger being fixed: `cswap switch | tee log`, Ctrl-C. Before, the shim
+# returned 0 AND the switch ran to completion inside the container -- a
+# cancelled credential write reported as success.
+#
+# Measured on the current shape, three runs, Ctrl-C to the whole process group
+# (which is what a terminal actually sends): exit=1 every time, and zero
+# surviving processes in the container. So both halves are addressed -- it no
+# longer claims success, and the command does not complete.
+#
+# What it is NOT: a clean 130. The trap below does NOT fire in the
+# group-signal case -- verified with an instrumented copy, the handler never
+# ran. Bash discards the pending trap when the foreground child dies of the
+# same signal, and the exit code observed is the docker client's 1. The trap
+# still matters for a signal delivered to the shim alone (`kill -INT <pid>`),
+# which is why it stays, and the post-wait override below makes the code
+# honest whenever it does run. Do not "simplify" that override away.
+#
+# Note 1 collides with the engine's own ERROR outcome. Distinguishing them
+# would need the in-container process to report its own fate; not worth the
+# machinery for a case the operator just triggered by hand.
+interrupted=0
+on_sig() {
+  local sig=$1 code=$2
+  interrupted=${code}
+  trap - INT TERM
+  relay "${sig}"
+  # Do not `wait` here for a job the main flow is already waiting on -- that
+  # hangs in bash (measured: the shim never returned).
+  kill -TERM "${child}" 2>/dev/null || true
+}
+trap 'on_sig INT 130' INT
+trap 'on_sig TERM 143' TERM
+
+set +e
+wait "${child}"
+rc=$?
+set -e
+if [ "${interrupted}" -ne 0 ]; then
+  rc=${interrupted}
 fi
-exec docker exec -i "${CONTAINER}" cswap "$@"
+exit "${rc}"
