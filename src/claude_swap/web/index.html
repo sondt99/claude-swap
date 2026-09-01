@@ -304,8 +304,11 @@ function toast(msg, kind) {
 }
 
 function setDisabled(v) {
-  document.querySelectorAll('button, input[type="range"]')
-    .forEach(b => { b.disabled = v; });
+  // Buttons only. The threshold slider stays enabled on purpose: a range fires
+  // `change` on every arrow-key press, so disabling it for the round trip
+  // dropped every keypress after the first (measured: 10 presses -> 1 POST,
+  // 0.1 of travel on a 500-stop scale). It is debounced instead, below.
+  document.querySelectorAll("button").forEach(b => { b.disabled = v; });
   grid.classList.toggle("busy", v);
   hero.classList.toggle("busy", v);
 }
@@ -655,13 +658,27 @@ function syncSlider() {
 thr.addEventListener("input", () => {
   THRESHOLD = Number(thr.value);
   thrHoldUntil = Date.now() + 6000;
+  clearTimeout(thrCommitTimer);
+  thrCommitTimer = setTimeout(commitThreshold, THR_COMMIT_DELAY_MS);
   thrVal.textContent = fmtThr(THRESHOLD) + "%";
   // Repaint from the snapshot we already hold: every tick and severity band
   // follows the handle immediately, with no request per pixel dragged.
   if (lastSnap) paint(lastSnap);
 });
 
+// Trailing-edge debounce. Pointer drags fire `change` once on release, but
+// keyboard adjustment fires it per keypress, so committing on every one both
+// hammers the endpoint and (with the control enabled) races itself.
+let thrCommitTimer = null;
+const THR_COMMIT_DELAY_MS = 400;
+
 thr.addEventListener("change", () => {
+  thrHoldUntil = Date.now() + 6000;
+  clearTimeout(thrCommitTimer);
+  thrCommitTimer = setTimeout(commitThreshold, THR_COMMIT_DELAY_MS);
+});
+
+function commitThreshold() {
   thrHoldUntil = Date.now() + 6000;
   post("/api/threshold", { value: Number(thr.value) }).then((ok) => {
     // On rejection drop the hold immediately so the next snapshot restores the
@@ -679,7 +696,7 @@ thr.addEventListener("change", () => {
       if (lastSnap) paint(lastSnap);
     }
   });
-});
+}
 
 function paint(s) {
   renderHealth(s.health);

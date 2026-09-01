@@ -7,26 +7,35 @@ The dashboard itself is no longer here: it was vendored into the package as
 `src/claude_swap/web/` and ships inside the wheel. This directory holds only the
 deployment wrapper.
 
-**Neither container ships claude-swap.** Both run the uv tool venv out of your
-mounted home directory, so they execute the *same* install as your host `cswap`
-— one copy, nothing to pin, nothing to bump in lockstep, and no chance of a
-containerised copy migrating the shared on-disk store to a schema the host tool
-doesn't understand. The image contributes only two shell drivers and an
-entrypoint that puts that venv on `PATH`.
+**Both containers run claude-swap built into the image**, from the source tree
+in this repo. Nothing is taken from the host except the credential store, which
+is bind-mounted — so claude-swap does not need to be installed on the host at
+all, and `docker compose up` can never pick up whatever version happened to be
+sitting there.
 
-Build and install the wheel first — that is what the containers execute:
+Dependencies come from `uv.lock` (`uv sync --locked`), so the image is
+reproducible rather than resolving fresh from PyPI at build time.
 
-```
-uv build && uv tool install --force ./dist/claude_swap-*.whl
-```
-
-Then, from this directory:
+From this directory:
 
 ```
 cp .env.example .env && chmod 600 .env   # first run only; fill in the values
-docker compose up --build -d      # start
+docker compose up --build -d      # start (rebuilds after a source change)
 docker compose logs -f auto       # watch the autoswitch engine
 docker compose down               # stop
+```
+
+Source changes need `--build`; there is no host install to refresh.
+
+### Keeping a `cswap` command
+
+The CLI lives in the image now. `deploy/cswap-host` routes it into the running
+container, which has the store mounted at its real path and runs as your uid,
+so what it writes is indistinguishable from a host install's output:
+
+```
+ln -sf "$PWD/deploy/cswap-host" ~/.local/bin/cswap
+cswap list
 ```
 
     http://127.0.0.1:8787/
@@ -194,9 +203,9 @@ mounted for a switch to land is `$HOME` itself. Symlinks and hardlinks do not
 help: `os.replace` swaps in a new inode, leaving any hardlink pointing at the
 old one.
 
-Mounting `$HOME` also happens to be what makes the host-venv trick work — the
-uv tool venv and its CPython both live under `~/.local/share/uv/`, so they come
-along for free with no extra mounts.
+The interpreter and every dependency live inside the image, so the
+mount carries data only — the credential store, `settings.json` and
+`~/.claude.json`. Nothing executable is read from the host.
 
 **The tradeoff is real**: these containers get read-write access to your entire
 home directory, and containerising buys no isolation here, because the app's
@@ -263,11 +272,12 @@ below 100: the margin covers the polling blind spot.
 
 | File | Role |
 |---|---|
-| `Dockerfile` | ca-certificates + the two drivers; no Python, no app code |
-| `docker-entrypoint.sh` | puts the host venv on `PATH`, fails fast if the mount is wrong |
+| `Dockerfile` | multi-stage: builds claude-swap from source into `/opt/cswap` |
+| `docker-entrypoint.sh` | puts the in-image venv on `PATH`, fails fast if the build or the mount is wrong |
 | `autoswitch-loop.sh` | `cswap auto --once` on a timer, with a pause gate |
 | `docker-compose.yml` | `web` (dashboard) + `auto` (autoswitch engine) |
 | `.env.example` | template; copy to `.env` and fill in |
+| `cswap-host` | host shim: routes `cswap` into the running container |
 | `.env` | uid/gid/home/TZ + the dashboard token — **mode 600, gitignored** |
 
 The dashboard itself lives in the package, not here:

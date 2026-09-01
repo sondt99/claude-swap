@@ -416,3 +416,88 @@ class TestPausedExitCode:
         delay = engine._next_delay(TickOutcome.PAUSED)
         interval = engine.settings.interval_seconds
         assert interval * 0.9 <= delay <= interval * 1.1
+
+
+class TestContentLengthIsCanonical:
+    """RFC 7230 says 1*DIGIT and forbids conflicting duplicates. int() accepts
+    far more, which is the classic request-smuggling desync primitive."""
+
+    # NOT rejected on purpose, and both are correct per RFC 7230:
+    #   "012"   -- 1*DIGIT permits leading zeros
+    #   " 12 "  -- surrounding OWS is stripped by the field parser
+    # Rejecting either would be stricter than the spec, so they are asserted as
+    # ACCEPTED below rather than left ambiguous.
+    @pytest.mark.parametrize("raw", ["+12", "1_2", "0x5", "1.0", "", "-1", "12a"])
+    def test_non_canonical_spellings_are_refused(self, live_server, raw):
+        port, service = live_server
+        status, reason = _post_raw(
+            port, json.dumps({"value": 85}).encode(), raw, want_body=True
+        )
+        assert status == 400
+        assert reason == b"bad Content-Length"
+        assert service.threshold_calls == []
+
+    @pytest.mark.parametrize("raw", ["012", " 12 "])
+    def test_rfc_legal_spellings_are_still_accepted(self, live_server, raw):
+        """Guards against over-correcting: both are valid 1*DIGIT/OWS."""
+        port, service = live_server
+        # Compact separators so the body is exactly the 12 bytes the header
+        # spellings under test declare.
+        body = json.dumps({"value": 85}, separators=(",", ":")).encode()
+        assert len(body) == 12
+        assert _post_raw(port, body, raw) == 200
+        assert service.threshold_calls == ["85"]
+
+    def test_conflicting_duplicate_headers_are_refused(self, live_server):
+        port, service = live_server
+        body = json.dumps({"value": 85}).encode()
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.putrequest("POST", "/api/threshold", skip_accept_encoding=True,
+                        skip_host=True)
+        conn.putheader("Host", "127.0.0.1")
+        conn.putheader("Content-Type", "application/json")
+        conn.putheader("Content-Length", str(len(body)))
+        conn.putheader("Content-Length", "99999")
+        conn.endheaders()
+        conn.send(body)
+        try:
+            resp = conn.getresponse()
+            assert resp.status == 400
+            assert resp.read().strip() == b"conflicting Content-Length"
+        finally:
+            conn.close()
+        assert service.threshold_calls == []
+
+    def test_a_rejection_announces_the_close(self, live_server):
+        """close_connection was set without the header, so a pooling client
+        returned the socket to its pool and got a reset on reuse."""
+        port, _ = live_server
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.putrequest("POST", "/api/threshold", skip_accept_encoding=True,
+                        skip_host=True)
+        conn.putheader("Host", "127.0.0.1")
+        conn.putheader("Content-Length", "-1")
+        conn.endheaders()
+        conn.send(b"{}")
+        try:
+            resp = conn.getresponse()
+            assert resp.status == 400
+            assert (resp.getheader("Connection") or "").lower() == "close"
+        finally:
+            conn.close()
+
+
+class TestPauseFlagMode:
+    def test_an_existing_flag_is_tightened(self, tmp_path, monkeypatch):
+        """touch(mode=...) applies only on create, so a flag left behind with a
+        laxer umask kept that mode and the claimed 0600 was never enforced."""
+        import os
+        import stat
+
+        flag = tmp_path / ".paused"
+        flag.touch()
+        os.chmod(flag, 0o666)
+        monkeypatch.setattr(paths, "autoswitch_pause_file", lambda: flag)
+
+        web_server.set_autoswitch_paused(True)
+        assert stat.S_IMODE(flag.stat().st_mode) == 0o600

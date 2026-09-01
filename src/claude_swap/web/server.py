@@ -172,6 +172,11 @@ def set_autoswitch_paused(paused: bool) -> None:
         # FileNotFoundError out of the handler.
         flag.parent.mkdir(parents=True, exist_ok=True)
         flag.touch(mode=0o600, exist_ok=True)
+        # touch()'s mode applies only on CREATE. A flag left behind by anything
+        # with a laxer umask would keep that mode forever, so the 0600 this
+        # claims to set has to be enforced explicitly.
+        if sys.platform != "win32":
+            os.chmod(flag, 0o600)
     else:
         flag.unlink(missing_ok=True)
 
@@ -434,6 +439,13 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
+        # Announce a close we have already decided on. Framing rejections drop
+        # the connection so leftover body bytes are not parsed as the next
+        # request line; without this header the client is entitled to assume
+        # HTTP/1.1 persistence, so a pooling client (urllib3/requests) returns
+        # the socket to its pool and gets a reset on the next use.
+        if self.close_connection:
+            self.send_header("Connection", "close")
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
@@ -532,12 +544,21 @@ class Handler(BaseHTTPRequestHandler):
         # next readline() would parse those leftover body bytes as a request
         # line. Close instead of trying to drain a length we just declared
         # untrustworthy.
-        try:
-            length = int(self.headers.get("Content-Length") or 0)
-        except ValueError:
+        # RFC 7230 says 1*DIGIT and forbids conflicting duplicates. int() is far
+        # more permissive: "+12", " 12 ", "1_2" (PEP 515) and "012" all parse,
+        # which is the classic request-smuggling desync primitive the moment
+        # anything proxies this.
+        lengths = self.headers.get_all("Content-Length") or []
+        if len({v.strip() for v in lengths}) > 1:
+            self.close_connection = True
+            return self._deny(HTTPStatus.BAD_REQUEST, "conflicting Content-Length")
+        raw_len = lengths[0].strip() if lengths else "0"
+        if not raw_len.isdigit():
             self.close_connection = True
             return self._deny(HTTPStatus.BAD_REQUEST, "bad Content-Length")
-        if length < 0:
+        try:
+            length = int(raw_len)
+        except ValueError:  # pragma: no cover - isdigit() already guarantees this
             self.close_connection = True
             return self._deny(HTTPStatus.BAD_REQUEST, "bad Content-Length")
         if length > 64_000:
