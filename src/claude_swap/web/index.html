@@ -97,21 +97,28 @@
   .hero-label b { color: var(--ink); font-weight: 600; }
   .hero-meta { font-size: 12px; color: var(--faint); }
 
-  /* Threshold control. It sits in the hero rather than on a card because it
-     scopes every meter on the page — one control above everything it governs,
-     not a copy per card. */
-  .hero-ctl { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--muted); }
-  .hero-ctl label { flex: none; }
-  .hero-ctl input[type="range"] {
-    flex: 1 1 120px; min-width: 90px; height: 18px; margin: 0;
+  /* Threshold control — one row above everything it governs, and never inside
+     a section that can be hidden. */
+  .ctl-row {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    font-size: 12px; color: var(--muted);
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: var(--radius); box-shadow: var(--shadow);
+    padding: 12px 18px; margin-bottom: 16px;
+  }
+  .ctl-row label { flex: none; }
+  .ctl-row input[type="range"] {
+    flex: 1 1 160px; min-width: 110px; height: 18px; margin: 0;
     accent-color: var(--accent); cursor: pointer; background: none;
   }
-  .hero-ctl input[type="range"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
-  .hero-ctl input[type="range"]:disabled { opacity: .45; cursor: not-allowed; }
-  .hero-ctl output {
-    flex: none; min-width: 34px; text-align: right;
+  .ctl-row input[type="range"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+  .ctl-row input[type="range"]:disabled { opacity: .45; cursor: not-allowed; }
+  .ctl-row output {
+    flex: none; min-width: 40px; text-align: right;
     font-variant-numeric: tabular-nums; font-weight: 600; color: var(--ink);
   }
+  .ctl-hint { flex: none; color: var(--faint); }
+  @media (max-width: 560px) { .ctl-hint { display: none; } }
 
   /* ---- meter ----
      Spec: the fill carries severity and the unfilled track is a lighter step of
@@ -255,17 +262,24 @@
         <div class="track" id="hero-track"><i id="hero-fill" style="width:0%"></i></div>
       </div>
       <div class="hero-meta" id="hero-meta"></div>
-      <div class="hero-ctl">
-        <label for="thr">Switch threshold</label>
-        <!-- Bounds mirror autoswitch.threshold's own spec (50–99.9). The server
-             re-checks via set_setting regardless; this only keeps the handle
-             from offering a value that would be rejected. -->
-        <input type="range" id="thr" min="50" max="99.9" step="0.1" value="90"
-               aria-describedby="hero-meta">
-        <output id="thr-val" for="thr">90%</output>
-      </div>
     </div>
   </section>
+
+  <!-- Outside the hero on purpose. The hero is hidden whenever there is no
+       active account or no usage yet, and this control governs every meter on
+       the page — nesting it there made it vanish exactly when a usage outage
+       made lowering the threshold most useful, and took it out of the tab
+       order with it. -->
+  <div class="ctl-row">
+    <label for="thr">Switch threshold</label>
+    <!-- Bounds mirror autoswitch.threshold's own spec (50–99.9). The server
+         re-checks via set_setting regardless; this only keeps the handle from
+         offering a value that would be rejected. -->
+    <input type="range" id="thr" min="50" max="99.9" step="0.1" value="90"
+           aria-describedby="thr-hint">
+    <output id="thr-val" for="thr">90%</output>
+    <span id="thr-hint" class="ctl-hint">the engine switches at this utilisation</span>
+  </div>
 
   <div class="grid" id="grid"></div>
   <div class="foot" id="foot"></div>
@@ -320,7 +334,8 @@ async function post(path, body) {
 // Anchored to the engine's own switch line rather than invented cut-offs, so
 // the colour changes exactly where the behaviour does. Falls back to 90 (the
 // shipped default) if settings could not be read.
-let THRESHOLD = 90;
+const DEFAULT_THRESHOLD = 90;   // matches settings.py's shipped default
+let THRESHOLD = DEFAULT_THRESHOLD;
 
 const SEV = {
   good:    { v: "--good",    word: "" },
@@ -404,7 +419,7 @@ function paintMeter(m, w, showTick) {
   if (showTick && THRESHOLD > 0 && THRESHOLD < 100) {
     m.tick.hidden = false;
     m.tick.style.left = THRESHOLD + "%";
-    m.tick.title = `switch threshold ${THRESHOLD}%`;
+    m.tick.title = `switch threshold ${fmtThr(THRESHOLD)}%`;
   } else {
     m.tick.hidden = true;
   }
@@ -490,6 +505,7 @@ function paintCard(c, a) {
 
   const sc = (u && u.scoped || []).filter(s => s.pct > 0);
   c.scoped.hidden = !sc.length;
+  if (!sc.length) c.scoped.textContent = "";
   if (sc.length) {
     c.scoped.innerHTML = sc.map(s =>
       `<span>${esc(s.name)} ${esc(s.pct)}%</span>`).join("");
@@ -529,7 +545,17 @@ function renderCards(acc) {
 // ---- hero --------------------------------------------------------------
 function renderHero(active) {
   const u = active && active.usage;
-  if (!u || (!u.fiveHour && !u.sevenDay)) { hero.hidden = true; return; }
+  if (!u || (!u.fiveHour && !u.sevenDay)) {
+    // Blank as well as hide, for the same reason paintMeter does: the hero
+    // figure is the largest number on the page and must not be recoverable as
+    // stale content if the hide rule is ever out-ranked again.
+    hero.hidden = true;
+    $("hero-num").textContent = "—";
+    $("hero-label").textContent = "";
+    $("hero-meta").textContent = "";
+    $("hero-fill").style.width = "0%";
+    return;
+  }
   hero.hidden = false;
   const p5 = u.fiveHour ? clampPct(u.fiveHour.pct) : 0;
   const p7 = u.sevenDay ? clampPct(u.sevenDay.pct) : 0;
@@ -555,8 +581,8 @@ function renderHero(active) {
     `<span class="slot">#${esc(active.number)}</span> ${chip(s)}`;
   const head = Math.max(0, THRESHOLD - pct);
   $("hero-meta").textContent = pct >= THRESHOLD
-    ? `The ${which} window is over the ${THRESHOLD}% threshold — the engine will switch on its next tick.`
-    : `The ${which} window is binding · ${head.toFixed(0)}% of headroom left before the ${THRESHOLD}% switch threshold.`;
+    ? `The ${which} window is over the ${fmtThr(THRESHOLD)}% threshold — the engine will switch on its next tick.`
+    : `The ${which} window is binding · ${head.toFixed(0)}% of headroom left before the ${fmtThr(THRESHOLD)}% switch threshold.`;
 }
 
 // ---- banners -----------------------------------------------------------
@@ -628,11 +654,14 @@ thr.addEventListener("change", () => {
     // tick against — a threshold the server had refused.
     if (!ok) {
       thrHoldUntil = 0;
-      if (lastSnap && typeof lastSnap.threshold === "number") {
-        THRESHOLD = lastSnap.threshold;
-        syncSlider();
-        paint(lastSnap);
-      }
+      // Number.isFinite, not typeof: the server emits `threshold: null` when it
+      // cannot read settings, and `typeof null` is "object" — so a typeof guard
+      // here left the page permanently asserting a value the server refused.
+      const back = Number.isFinite(lastSnap && lastSnap.threshold)
+        ? lastSnap.threshold : DEFAULT_THRESHOLD;
+      THRESHOLD = back;
+      syncSlider();
+      if (lastSnap) paint(lastSnap);
     }
   });
 });

@@ -328,7 +328,13 @@ class Service:
         file from another process), so take the store's own file lock, which is
         what every other cross-process mutation here serializes on.
         """
-        with self._lock, FileLock(self.switcher.lock_file):
+        # Deliberately NOT under ``self._lock``: that lock guards the snapshot
+        # source, and holding it across a file-lock wait froze the poller — and
+        # so every connected dashboard — for up to the full timeout while a
+        # switch held the store lock. ``set_setting`` touches nothing the
+        # snapshotter owns, so the file lock alone is the correct scope. The
+        # timeout is short because a caller is waiting on an HTTP response.
+        with FileLock(self.switcher.lock_file, timeout=3.0):
             value = set_setting(self.switcher.backup_dir, "autoswitch.threshold", raw)
         self.nudge()
         return {
@@ -355,6 +361,11 @@ class Service:
 class Handler(BaseHTTPRequestHandler):
     server_version = "cswap-web"
     protocol_version = "HTTP/1.1"
+    # Without this, a client that announces a body and then sends one byte pins
+    # a handler thread in rfile.read() indefinitely; ThreadingHTTPServer caps
+    # nothing, so a handful of such sockets exhausts threads and fds. Bounding
+    # Content-Length does not help — read(n) blocks until n bytes or EOF.
+    timeout = 15
 
     service: Service
     token: str
@@ -496,6 +507,15 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authed(parse_qs(parsed.query)):
             return self._deny(HTTPStatus.UNAUTHORIZED, "missing or bad token")
 
+        # http.server does not implement chunked decoding: the body would be
+        # silently ignored (so a mutation would run on defaults) and left in
+        # the socket to be parsed as the next request line.
+        if self.headers.get("Transfer-Encoding"):
+            self.close_connection = True
+            return self._deny(
+                HTTPStatus.LENGTH_REQUIRED, "Transfer-Encoding is not supported"
+            )
+
         # Bound BOTH ends, and parse defensively. A negative Content-Length
         # clears an upper-bound-only check, is truthy, and then reaches
         # rfile.read(-1) — which means "read to EOF": the 64 KB cap is skipped
@@ -512,7 +532,10 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             self.close_connection = True
             return self._deny(HTTPStatus.BAD_REQUEST, "bad Content-Length")
-        if not 0 <= length <= 64_000:
+        if length < 0:
+            self.close_connection = True
+            return self._deny(HTTPStatus.BAD_REQUEST, "bad Content-Length")
+        if length > 64_000:
             self.close_connection = True
             return self._deny(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "body too large")
         raw = self.rfile.read(length) if length else b"{}"
@@ -529,6 +552,15 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"ok": False, "message": str(e)}, HTTPStatus.BAD_REQUEST)
         except ValueError as e:
             return self._json({"ok": False, "message": str(e)}, HTTPStatus.BAD_REQUEST)
+        except OSError as e:
+            # An unwritable home or backup dir used to escape here. Nothing in
+            # http.server maps that to a 500 -- the connection is simply
+            # dropped, so the browser reports "Failed to fetch" and names
+            # nothing. Answer with the errno so the cause is visible.
+            return self._json(
+                {"ok": False, "message": f"{type(e).__name__}: {e}"},
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+            )
         if result is None:
             return self._deny(HTTPStatus.NOT_FOUND, "not found")
         return self._json(result)
@@ -541,6 +573,10 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("identifier is required")
             return svc.switch_to(identifier)
         if route == "/api/switch-strategy":
+            # Absent != null. A body-less POST used to mean "plain rotate",
+            # so a request whose body was dropped silently switched accounts.
+            if "strategy" not in body:
+                raise ValueError("strategy is required (use null for plain rotation)")
             strategy = body.get("strategy")
             if strategy not in (None, "best", "next-available"):
                 raise ValueError(f"unknown strategy: {strategy}")
@@ -557,6 +593,8 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("identifier and alias are required")
             return svc.set_alias(identifier, alias)
         if route == "/api/autoswitch":
+            if "paused" not in body:
+                raise ValueError("paused is required")
             paused = bool(body.get("paused"))
             set_autoswitch_paused(paused)
             svc.nudge()

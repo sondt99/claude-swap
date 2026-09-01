@@ -68,18 +68,23 @@ class TestThresholdBounds:
 class TestPauseFileIsShared:
     """The pause toggle was a no-op for anyone not using the Docker loop."""
 
-    def test_the_path_is_resolved_per_call_not_frozen_at_import(self, monkeypatch):
-        """A module constant would snapshot Path.home() at import, so the
-        dashboard could write one path while the engine — which resolves at
-        tick time — consults another."""
-        assert not hasattr(web_server, "PAUSE_FILE"), (
-            "a cached constant reintroduces the dashboard/engine split"
+    def test_dashboard_and_engine_consult_the_same_file(self, tmp_path, monkeypatch):
+        """The property the fix is about: what the dashboard WRITES is what the
+        engine READS. A module-level constant froze Path.home() at import while
+        the engine resolved it at tick time, so the two could diverge."""
+        monkeypatch.setattr(
+            paths.Path, "home", staticmethod(lambda: tmp_path)
         )
-        monkeypatch.setattr(paths.Path, "home", staticmethod(lambda: paths.Path("/a")))
+        web_server.set_autoswitch_paused(True)
+        # Read back through the engine's own accessor, not the server's.
+        assert paths.autoswitch_pause_file().exists()
+        assert paths.autoswitch_pause_file().parent == tmp_path
+
+        # And it must follow a later home change rather than a snapshot.
+        other = tmp_path / "other"
+        other.mkdir()
+        monkeypatch.setattr(paths.Path, "home", staticmethod(lambda: other))
         assert web_server.autoswitch_paused() is False
-        monkeypatch.setattr(paths.Path, "home", staticmethod(lambda: paths.Path("/b")))
-        # Resolving again must follow the new home, not a stale snapshot.
-        assert paths.autoswitch_pause_file() == paths.Path("/b/.cswap-web-paused")
 
     def test_toggle_round_trips(self, tmp_path, monkeypatch):
         flag = tmp_path / ".cswap-web-paused"
@@ -124,17 +129,32 @@ def live_server():
     httpd.server_close()
 
 
-def _post_raw(port: int, body: bytes, content_length: str) -> int:
-    """POST with a hand-written Content-Length, bypassing the client's own."""
+def _post_raw(
+    port: int,
+    body: bytes,
+    content_length: str | None,
+    *,
+    path: str = "/api/threshold",
+    want_body: bool = False,
+    extra: dict[str, str] | None = None,
+) -> int | tuple[int, bytes]:
+    """POST with hand-written framing, bypassing the client's own."""
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-    conn.putrequest("POST", "/api/threshold", skip_accept_encoding=True)
+    conn.putrequest(
+        "POST", path, skip_accept_encoding=True, skip_host=True
+    )
     conn.putheader("Host", "127.0.0.1")
     conn.putheader("Content-Type", "application/json")
-    conn.putheader("Content-Length", content_length)
+    if content_length is not None:
+        conn.putheader("Content-Length", content_length)
+    for k, v in (extra or {}).items():
+        conn.putheader(k, v)
     conn.endheaders()
     conn.send(body)
     try:
-        return conn.getresponse().status
+        resp = conn.getresponse()
+        payload = resp.read()
+        return (resp.status, payload.strip()) if want_body else resp.status
     finally:
         conn.close()
 
@@ -147,12 +167,18 @@ class TestContentLengthIsBoundedBothWays:
     def test_negative_content_length_is_refused(self, live_server):
         port, service = live_server
         body = json.dumps({"value": 85}).encode()
-        assert _post_raw(port, body, "-1") == 413
+        status, reason = _post_raw(port, body, "-1", want_body=True)
+        assert status == 400
+        # Assert the REASON, not just the code: a wrong fix that quietly
+        # discards the body also answers 400, and would pass a code-only check.
+        assert reason == b"bad Content-Length"
         assert service.threshold_calls == []
 
     def test_non_integer_content_length_is_refused_not_500(self, live_server):
         port, service = live_server
-        assert _post_raw(port, b"{}", "abc") == 400
+        status, reason = _post_raw(port, b"{}", "abc", want_body=True)
+        assert status == 400
+        assert reason == b"bad Content-Length"
         assert service.threshold_calls == []
 
     def test_oversized_body_is_still_refused(self, live_server):
@@ -167,7 +193,7 @@ class TestContentLengthIsBoundedBothWays:
 
 
 class TestThresholdPayloadValidation:
-    def _post(self, port: int, payload: dict) -> int:
+    def _post(self, port: int, payload: dict):
         body = json.dumps(payload).encode()
         return _post_raw(port, body, str(len(body)))
 
@@ -197,3 +223,95 @@ class TestSnapshotCarriesThreshold:
             "S", (), {"accounts": [], "active_number": None, "taken_at": 0.0}
         )()
         assert web_server.snapshot_to_json(snap, None)["threshold"] is None
+
+
+class TestFramingRejections:
+    """http.server does not decode chunked, so an undeclared body was silently
+    dropped -- and a mutation then ran on its defaults."""
+
+    def test_chunked_is_refused(self, live_server):
+        port, service = live_server
+        status = _post_raw(
+            port, b'{"value":85}', None, extra={"Transfer-Encoding": "chunked"}
+        )
+        assert status == 411
+        assert service.threshold_calls == []
+
+    def test_a_bodyless_post_does_not_act_on_defaults(self, live_server):
+        """`/api/autoswitch` with no body used to mean paused=False (resume) and
+        `/api/switch-strategy` with no body used to mean a real rotation."""
+        port, _ = live_server
+        for route in ("/api/autoswitch", "/api/switch-strategy"):
+            assert _post_raw(port, b"", "0", path=route) == 400
+
+
+class TestEnginePauseGate:
+    """The substance of the pause fix lives in autoswitch.tick(), which had no
+    test at all -- the toggle was a no-op outside the Docker shell loop."""
+
+    def test_tick_returns_no_action_and_does_not_poll_when_paused(
+        self, tmp_path, monkeypatch
+    ):
+        from claude_swap.autoswitch import AutoSwitchEngine, TickOutcome
+
+        monkeypatch.setattr(paths.Path, "home", staticmethod(lambda: tmp_path))
+        engine = AutoSwitchEngine.__new__(AutoSwitchEngine)  # no store, no network
+        emitted: list = []
+        engine._emit = lambda event: emitted.append(event)
+
+        polled: list[bool] = []
+
+        def _inner():
+            polled.append(True)
+            return TickOutcome.NO_ACTION
+
+        engine._tick_inner = _inner
+
+        # Flag absent: the gate must not swallow a normal tick.
+        assert engine.tick() is TickOutcome.NO_ACTION
+        assert polled == [True]
+
+        # Flag present: short-circuits BEFORE polling, and says so.
+        paths.autoswitch_pause_file().touch()
+        assert engine.tick() is TickOutcome.NO_ACTION
+        assert polled == [True], "polled while paused"
+        assert any(getattr(e, "reason", "") == "paused" for e in emitted)
+
+    def test_tick_polls_again_once_the_flag_is_gone(self, tmp_path, monkeypatch):
+        from claude_swap.autoswitch import AutoSwitchEngine, TickOutcome
+
+        monkeypatch.setattr(paths.Path, "home", staticmethod(lambda: tmp_path))
+        engine = AutoSwitchEngine.__new__(AutoSwitchEngine)
+        engine._emit = lambda event: None
+        engine._tick_inner = lambda: TickOutcome.SWITCHED
+
+        flag = paths.autoswitch_pause_file()
+        flag.touch()
+        assert engine.tick() is TickOutcome.NO_ACTION
+        flag.unlink()
+        assert engine.tick() is TickOutcome.SWITCHED
+
+
+class TestPageStructure:
+    """Cheap structural guards for two defects that were only visible in a
+    browser, so nothing in the suite would have caught either."""
+
+    def _page(self) -> str:
+        from claude_swap.web.server import INDEX
+
+        return INDEX.read_text(encoding="utf-8")
+
+    def test_hidden_attribute_actually_hides(self):
+        # Author `display:flex` out-ranks the UA [hidden] rule, so without an
+        # explicit winning rule `el.hidden = true` is a silent no-op.
+        assert "[hidden] { display: none !important; }" in self._page()
+
+    def test_threshold_control_is_not_inside_the_hero(self):
+        # The hero is hidden whenever there is no active account or no usage.
+        # Nesting the only threshold control there made it vanish, and leave
+        # the tab order, exactly when a usage outage made it most useful.
+        page = self._page()
+        hero_open = page.index('<section class="hero"')
+        hero_close = page.index("</section>", hero_open)
+        assert 'id="thr"' not in page[hero_open:hero_close]
+        assert 'id="thr"' in page
