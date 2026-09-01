@@ -9,5 +9,12 @@ wheels/
 # Virtual environments
 .venv
 
+# Local deployment config. This repo has an 'origin' pointing at the upstream
+# GitHub project, so an accidental `git add .` here is one wrong push away from
+# publishing a dashboard token. Ignored before any such file exists.
+.env
+.env.*
+!.env.example
+
 # superpowers session planning artifacts (not part of the project)
 docs/superpowers/
