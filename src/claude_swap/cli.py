@@ -66,6 +66,7 @@ _SUBCOMMAND_FLAGS = {
     "tui": "--tui",
     "watch": "--watch",
     "menubar": "--menubar",
+    "web": "--web",
 }
 
 
@@ -993,6 +994,7 @@ Commands:
   %(prog)s tui                        interactive dashboard (also: bare %(prog)s)
   %(prog)s watch                      dashboard, opened on the live watch page
   %(prog)s menubar                    macOS menu bar app
+  %(prog)s web                        browser dashboard on 127.0.0.1
   %(prog)s upgrade                    self-upgrade to latest
   %(prog)s purge                      remove all claude-swap data
 
@@ -1062,6 +1064,37 @@ The original flag spellings (%(prog)s --switch, %(prog)s --list, ...) keep worki
         type=int,
         metavar="NUM",
         help="Specify slot number when adding account (use with 'add' or 'add-token')",
+    )
+    parser.add_argument(
+        "--host",
+        default=None,
+        metavar="ADDR",
+        help=(
+            "With 'web': interface to bind (default: 127.0.0.1). Use 0.0.0.0 "
+            "only inside a container whose port is published to loopback"
+        ),
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        metavar="NUM",
+        help="With 'web': port to listen on (default: 8787)",
+    )
+    parser.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="With 'web': don't auto-open a browser on start",
+    )
+    parser.add_argument(
+        "--no-auth",
+        action="store_true",
+        default=os.environ.get("CSWAP_WEB_NO_AUTH") == "1",
+        help=(
+            "With 'web': serve without a token (env: CSWAP_WEB_NO_AUTH=1). "
+            "Loopback bind, Origin and Host checks still apply, but any local "
+            "process can then drive a switch"
+        ),
     )
     parser.add_argument(
         "--email",
@@ -1177,6 +1210,11 @@ The original flag spellings (%(prog)s --switch, %(prog)s --list, ...) keep worki
         help=argparse.SUPPRESS,
     )
     group.add_argument(
+        "--web",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    group.add_argument(
         "--upgrade",
         action="store_true",
         help=argparse.SUPPRESS,
@@ -1204,6 +1242,7 @@ The original flag spellings (%(prog)s --switch, %(prog)s --list, ...) keep worki
         or args.tui
         or args.watch
         or args.menubar
+        or args.web
         or args.upgrade
         or args.remove_account is not None
         or args.disable_account is not None
@@ -1254,6 +1293,14 @@ The original flag spellings (%(prog)s --switch, %(prog)s --list, ...) keep worki
 
     if args.full and not args.export:
         parser.error("--full can only be used with 'export'")
+
+    # --no-auth is deliberately absent here: it defaults from CSWAP_WEB_NO_AUTH,
+    # so a container exporting that env for its web service would otherwise make
+    # every other subcommand error out.
+    if (
+        args.host is not None or args.port is not None or args.no_browser
+    ) and not args.web:
+        parser.error("--host, --port and --no-browser can only be used with 'web'")
 
     # Self-upgrade runs before switcher init so we don't touch config/keychain
     # just to upgrade the tool itself.
@@ -1356,6 +1403,18 @@ The original flag spellings (%(prog)s --switch, %(prog)s --list, ...) keep worki
             from claude_swap.menubar import run as menubar_run
 
             sys.exit(menubar_run(switcher))
+        elif args.web:
+            from claude_swap.web import run as web_run
+
+            sys.exit(
+                web_run(
+                    switcher,
+                    host=args.host or "127.0.0.1",
+                    port=args.port or 8787,
+                    open_browser=not args.no_browser,
+                    no_auth=args.no_auth,
+                )
+            )
     except ClaudeSwitchError as e:
         # In JSON mode keep stdout pure JSON: emit the structured error envelope
         # there (exit 1) instead of a red stderr line.

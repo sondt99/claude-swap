@@ -1,0 +1,81 @@
+# Always-on cswap: web dashboard + autoswitch engine.
+#
+# Neither container ships claude-swap. Both run the uv tool venv from the
+# mounted home, so they execute the *same* install as your host `cswap` — one
+# copy, no version pinning, no drift, and `cswap` on the host stays
+# authoritative.
+#
+# The home directory is mounted at its *identical* path so every path
+# claude-swap derives (Path.home(), $XDG_DATA_HOME/claude-swap,
+# $HOME/.claude.json, and the venv itself) resolves to the same file the host
+# CLI uses, with no translation layer.
+#
+# It has to be the whole home directory, not just the data files: claude-swap
+# publishes ~/.claude.json by atomic rename (switcher._write_json ->
+# fsutil.replace_with_retry -> os.replace), and renaming onto a Docker
+# single-file bind mount fails with EBUSY, which that helper only retries for
+# Windows error codes. Mounting the parent directory is what makes the rename
+# land on the host. Note also that this Docker only auto-creates ONE level of
+# missing mount destination — $HOME lands because /home already exists in the
+# image; a deeper target would silently mount empty.
+
+# Only `web` declares build: both services share one image, and letting them
+# build it concurrently makes the second export fail with "already exists".
+x-common: &common
+  image: cswap-web:1
+  user: "${HOST_UID}:${HOST_GID}"
+  environment:
+    HOME: "${HOST_HOME}"
+    TZ: "${TZ:-Asia/Ho_Chi_Minh}"
+    # Without this, Python block-buffers stdout whenever it is a pipe — which
+    # it always is under Docker. `cswap auto` then logs nothing for hours and
+    # the engine looks dead while it is in fact switching accounts normally.
+    # (Diagnosed 2026-09-01: last visible log line was three days stale while
+    # autoswitch_state.json showed a switch minutes earlier.)
+    PYTHONUNBUFFERED: "1"
+  volumes:
+    - "${HOST_HOME}:${HOST_HOME}"
+    - /etc/localtime:/etc/localtime:ro
+  restart: unless-stopped
+
+services:
+  web:
+    <<: *common
+    build:
+      context: .
+    container_name: cswap-web
+    environment:
+      HOME: "${HOST_HOME}"
+      TZ: "${TZ:-Asia/Ho_Chi_Minh}"
+      # No token: http://127.0.0.1:8787/ opens straight up. Deliberate —
+      # loopback bind, Origin check and Host pin still block anything coming
+      # through a browser; what this concedes is that any *local* process can
+      # POST a switch. Set to 0 (and use CSWAP_WEB_TOKEN below) to re-enable.
+      CSWAP_WEB_NO_AUTH: "1"
+      # Kept for when auth is turned back on: a stable token means the
+      # bookmark survives a restart (value in .env).
+      CSWAP_WEB_TOKEN: "${CSWAP_WEB_TOKEN}"
+    # Published to loopback only — never 0.0.0.0. The server binds 0.0.0.0
+    # *inside* the container so this publish can reach it; the host-side
+    # 127.0.0.1 is what actually limits exposure.
+    ports:
+      - "127.0.0.1:8787:8787"
+    # CMD-SHELL, not CMD: healthchecks bypass the entrypoint, so the venv is
+    # not on PATH here and the interpreter needs its full path.
+    healthcheck:
+      test: ["CMD-SHELL",
+             "$$HOME/.local/share/uv/tools/claude-swap/bin/python -c \"import urllib.request;urllib.request.urlopen('http://127.0.0.1:8787/healthz',timeout=5)\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  auto:
+    <<: *common
+    container_name: cswap-auto
+    depends_on:
+      - web  # only to order the shared image build, not a runtime dependency
+    # The autoswitch engine, driven by our own tick loop rather than `cswap
+    # auto`'s built-in one — see autoswitch-loop.sh for why (pause support,
+    # and settings.json re-read every tick instead of once at startup).
+    command: ["/usr/local/bin/autoswitch-loop.sh"]
