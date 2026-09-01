@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="vi">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -90,6 +90,22 @@
   .hero-label { font-size: 12px; color: var(--muted); }
   .hero-label b { color: var(--ink); font-weight: 600; }
   .hero-meta { font-size: 12px; color: var(--faint); }
+
+  /* Threshold control. It sits in the hero rather than on a card because it
+     scopes every meter on the page — one control above everything it governs,
+     not a copy per card. */
+  .hero-ctl { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--muted); }
+  .hero-ctl label { flex: none; }
+  .hero-ctl input[type="range"] {
+    flex: 1 1 120px; min-width: 90px; height: 18px; margin: 0;
+    accent-color: var(--accent); cursor: pointer; background: none;
+  }
+  .hero-ctl input[type="range"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+  .hero-ctl input[type="range"]:disabled { opacity: .45; cursor: not-allowed; }
+  .hero-ctl output {
+    flex: none; min-width: 34px; text-align: right;
+    font-variant-numeric: tabular-nums; font-weight: 600; color: var(--ink);
+  }
 
   /* ---- meter ----
      Spec: the fill carries severity and the unfilled track is a lighter step of
@@ -233,6 +249,15 @@
         <div class="track" id="hero-track"><i id="hero-fill" style="width:0%"></i></div>
       </div>
       <div class="hero-meta" id="hero-meta"></div>
+      <div class="hero-ctl">
+        <label for="thr">Switch threshold</label>
+        <!-- Bounds mirror autoswitch.threshold's own spec (50–99.9). The server
+             re-checks via set_setting regardless; this only keeps the handle
+             from offering a value that would be rejected. -->
+        <input type="range" id="thr" min="50" max="99" step="1" value="90"
+               aria-describedby="hero-meta">
+        <output id="thr-val" for="thr">90%</output>
+      </div>
     </div>
   </section>
 
@@ -257,7 +282,8 @@ function toast(msg, kind) {
 }
 
 function setDisabled(v) {
-  document.querySelectorAll("button").forEach(b => { b.disabled = v; });
+  document.querySelectorAll('button, input[type="range"]')
+    .forEach(b => { b.disabled = v; });
   grid.classList.toggle("busy", v);
   hero.classList.toggle("busy", v);
 }
@@ -290,9 +316,9 @@ let THRESHOLD = 90;
 
 const SEV = {
   good:    { v: "--good",    word: "" },
-  warn:    { v: "--warn",    word: "gần ngưỡng" },
-  serious: { v: "--serious", word: "sắp chuyển" },
-  crit:    { v: "--crit",    word: "vượt ngưỡng" },
+  warn:    { v: "--warn",    word: "near threshold" },
+  serious: { v: "--serious", word: "switching soon" },
+  crit:    { v: "--crit",    word: "over threshold" },
 };
 
 // Distinct shapes, not just distinct hues — the light-mode warning and serious
@@ -359,13 +385,13 @@ function paintMeter(m, w, showTick) {
   if (showTick && THRESHOLD > 0 && THRESHOLD < 100) {
     m.tick.hidden = false;
     m.tick.style.left = THRESHOLD + "%";
-    m.tick.title = `ngưỡng chuyển ${THRESHOLD}%`;
+    m.tick.title = `switch threshold ${THRESHOLD}%`;
   } else {
     m.tick.hidden = true;
   }
   const showPace = w.aheadOfPace && w.expectedPct != null;
   m.pace.hidden = !showPace;
-  if (showPace) m.pace.textContent = `vượt nhịp — dự kiến ${w.expectedPct}%`;
+  if (showPace) m.pace.textContent = `ahead of pace — expected ${w.expectedPct}%`;
 }
 
 // ---- cards -------------------------------------------------------------
@@ -413,7 +439,7 @@ function freshHTML(a) {
   const failing = (a.failures || 0) >= 2;
   const k = failing ? "bad" : a.ageSeconds > 900 ? "old" : "";
   const err = failing ? ` · ${esc(a.lastError || "fetch failing")}` : "";
-  return `<span class="fresh ${k}">· ${esc(ago(a.ageSeconds))} trước${err}</span>`;
+  return `<span class="fresh ${k}">· ${esc(ago(a.ageSeconds))} ago${err}</span>`;
 }
 
 function paintCard(c, a) {
@@ -441,7 +467,7 @@ function paintCard(c, a) {
 
   const hasUsage = !!(u && (u.fiveHour || u.sevenDay));
   c.state.hidden = hasUsage;
-  if (!hasUsage) c.state.textContent = a.sentinelLabel || a.lastError || "chưa có dữ liệu";
+  if (!hasUsage) c.state.textContent = a.sentinelLabel || a.lastError || "no data yet";
 
   const sc = (u && u.scoped || []).filter(s => s.pct > 0);
   c.scoped.hidden = !sc.length;
@@ -459,7 +485,7 @@ function renderCards(acc) {
   if (!acc.length) {
     cards.clear();
     grid.innerHTML =
-      '<div class="empty">Chưa có account nào được quản lý. Dùng <code>cswap add</code> để thêm.</div>';
+      '<div class="empty">No accounts managed yet. Use <code>cswap add</code> to add one.</div>';
     return;
   }
   const seen = new Set();
@@ -501,12 +527,12 @@ function renderHero(active) {
   tick.hidden = !(THRESHOLD > 0 && THRESHOLD < 100);
 
   $("hero-label").innerHTML =
-    `Đang dùng <b>${esc(active.alias || active.email)}</b> ` +
+    `Active <b>${esc(active.alias || active.email)}</b> ` +
     `<span class="slot">#${esc(active.number)}</span> ${chip(s)}`;
   const head = Math.max(0, THRESHOLD - pct);
   $("hero-meta").textContent = pct >= THRESHOLD
-    ? `Cửa sổ ${which} đã vượt ngưỡng ${THRESHOLD}% — engine sẽ chuyển ở tick kế tiếp.`
-    : `Cửa sổ ${which} đang chi phối · còn ${head.toFixed(0)}% nữa tới ngưỡng chuyển ${THRESHOLD}%.`;
+    ? `The ${which} window is over the ${THRESHOLD}% threshold — the engine will switch on its next tick.`
+    : `The ${which} window is binding · ${head.toFixed(0)}% of headroom left before the ${THRESHOLD}% switch threshold.`;
 }
 
 // ---- banners -----------------------------------------------------------
@@ -520,9 +546,9 @@ function renderPause(p) {
   note.classList.toggle("show", paused);
   if (paused) {
     note.innerHTML =
-      "<b>Autoswitch đang tắt.</b> Account bạn chọn sẽ đứng yên, " +
-      "nhưng bạn <b>không</b> được bảo vệ khỏi rate limit — khi quota cạn " +
-      "sẽ không có gì tự chuyển giúp. Bấm <b>Auto: OFF</b> để bật lại.";
+      "<b>Autoswitch is off.</b> The account you picked will stay put, but you " +
+      "are <b>not</b> protected from rate limits — when the quota runs out " +
+      "nothing will move you. Press <b>Auto: OFF</b> to turn it back on.";
   }
 }
 
@@ -534,18 +560,45 @@ function renderHealth(h) {
   if (!h || !h.degraded) { el.classList.remove("show"); return; }
   const age = h.maxAgeSeconds != null ? ago(h.maxAgeSeconds) : "?";
   el.innerHTML =
-    `<b>Usage fetch đang lỗi</b> — ${esc(h.failingCount)} account, ` +
-    `dữ liệu cũ nhất ${esc(age)}${h.lastError ? ` · ${esc(h.lastError)}` : ""}. ` +
-    `Engine vẫn switch, nhưng dựa trên số liệu lỗi thời nên sẽ trễ.` +
+    `<b>Usage fetches are failing</b> — ${esc(h.failingCount)} account(s), ` +
+    `oldest data ${esc(age)}${h.lastError ? ` · ${esc(h.lastError)}` : ""}. ` +
+    `The engine still switches, but on stale numbers, so it will be late.` +
     `<span class="hint">docker exec cswap-auto /usr/local/bin/docker-entrypoint.sh python -c ` +
     `"import urllib.request;urllib.request.urlopen('https://api.anthropic.com/v1/models',timeout=10)"` +
-    `\n→ HTTP 401 = TLS ổn (lỗi mạng thật) · CERTIFICATE_VERIFY_FAILED = thiếu CA bundle</span>`;
+    `\n→ HTTP 401 = TLS is fine (a real network fault) · CERTIFICATE_VERIFY_FAILED = missing CA bundle</span>`;
   el.classList.add("show");
 }
 
-function render(s) {
-  if (s.error) { toast(s.error, "err"); return; }
-  if (typeof s.threshold === "number" && s.threshold > 0) THRESHOLD = s.threshold;
+// ---- threshold control -------------------------------------------------
+const thr = $("thr"), thrVal = $("thr-val");
+let lastSnap = null;
+// A drag must not fight the 10s snapshot. Hold the server's value off for long
+// enough that the POST lands and the next snapshot already carries the new
+// number — otherwise the handle visibly snaps back mid-gesture.
+let thrHoldUntil = 0;
+
+const fmtThr = (v) => String(Math.round(v * 10) / 10);
+
+function syncSlider() {
+  thr.value = String(Math.round(THRESHOLD));
+  thrVal.textContent = fmtThr(THRESHOLD) + "%";
+}
+
+thr.addEventListener("input", () => {
+  THRESHOLD = Number(thr.value);
+  thrHoldUntil = Date.now() + 6000;
+  thrVal.textContent = fmtThr(THRESHOLD) + "%";
+  // Repaint from the snapshot we already hold: every tick and severity band
+  // follows the handle immediately, with no request per pixel dragged.
+  if (lastSnap) paint(lastSnap);
+});
+
+thr.addEventListener("change", () => {
+  thrHoldUntil = Date.now() + 6000;
+  post("/api/threshold", { value: Number(thr.value) });
+});
+
+function paint(s) {
   renderHealth(s.health);
   renderPause(s.autoswitchPaused);
   const acc = s.accounts || [];
@@ -553,7 +606,17 @@ function render(s) {
   renderCards(acc);
   const t = new Date((s.takenAt || 0) * 1000);
   $("foot").textContent = acc.length
-    ? `${acc.length} account · cập nhật ${t.toLocaleTimeString()}` : "";
+    ? `${acc.length} accounts · updated ${t.toLocaleTimeString()}` : "";
+}
+
+function render(s) {
+  if (s.error) { toast(s.error, "err"); return; }
+  lastSnap = s;
+  if (typeof s.threshold === "number" && s.threshold > 0 && Date.now() > thrHoldUntil) {
+    THRESHOLD = s.threshold;
+    syncSlider();
+  }
+  paint(s);
 }
 
 grid.addEventListener("click", (e) => {
@@ -564,7 +627,7 @@ grid.addEventListener("click", (e) => {
   else if (b.dataset.act === "toggle")
     post("/api/disabled", { identifier: id, disabled: b.dataset.on === "1" });
   else if (b.dataset.act === "alias") {
-    const v = prompt(`Alias cho slot ${id}\n(chữ, số, - _ . — không được toàn số)`);
+    const v = prompt(`Alias for slot ${id}\n(letters, digits, - _ . — cannot be all digits)`);
     if (v && v.trim()) post("/api/alias", { identifier: id, alias: v.trim() });
   }
 });

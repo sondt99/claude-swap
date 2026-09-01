@@ -41,7 +41,7 @@ from urllib.parse import parse_qs, urlparse
 from claude_swap import __version__ as CSWAP_VERSION
 from claude_swap.exceptions import ClaudeSwitchError
 from claude_swap.json_output import usage_to_json
-from claude_swap.settings import load_settings
+from claude_swap.settings import load_settings, set_setting
 from claude_swap.switcher import ClaudeAccountSwitcher
 from claude_swap.tui.data import (
     SnapshotSource,
@@ -85,13 +85,13 @@ HELP_PAGE = """<!doctype html>
  b{font-weight:600}
 </style>
 <div class="c">
-  <h1>Cần token để mở dashboard</h1>
-  <p>Lấy token trên máy bạn:</p>
+  <h1>A token is needed to open the dashboard</h1>
+  <p>Read it on this machine:</p>
   <code>grep CSWAP_WEB_TOKEN deploy/.env</code>
-  <p>Rồi mở <b>một lần duy nhất</b> với token đó:</p>
+  <p>Then open this <b>once</b>, with that token:</p>
   <code>http://127.0.0.1:8787/?token=&lt;token&gt;</code>
-  <p>Sau lần đó token được ghim vào cookie (1 năm) — từ đó vào thẳng
-     <b>127.0.0.1:8787</b>, không cần token nữa.</p>
+  <p>After that the token is pinned to a cookie (1 year) — from then on go
+     straight to <b>127.0.0.1:8787</b>, no token needed.</p>
 </div>
 """
 
@@ -297,6 +297,27 @@ class Service:
         return self.act(
             partial(self.switcher.switch, strategy=strategy, json_output=True)
         )
+
+    def set_threshold(self, raw: str) -> dict:
+        """Persist autoswitch.threshold, the same way ``cswap config set`` does.
+
+        Reuses ``set_setting`` rather than writing the key here: that is where
+        the range check (50–99.9) and the write-only-this-key behaviour live, so
+        the browser cannot persist a value the CLI would have rejected, and
+        unknown keys in settings.json survive the write. An out-of-range value
+        raises ConfigError, which ``do_POST`` already turns into a 400.
+
+        No restart is needed for this to take effect: the tick loop runs a fresh
+        ``cswap auto --once`` each time and re-reads settings.json on every one.
+        """
+        value = set_setting(self.switcher.backup_dir, "autoswitch.threshold", raw)
+        self.nudge()
+        return {
+            "ok": True,
+            "message": f"Switch threshold set to {value:g}%",
+            "output": "",
+            "payload": {"threshold": value},
+        }
 
     def set_disabled(self, identifier: str, disabled: bool) -> dict:
         return self.act(
@@ -507,13 +528,22 @@ class Handler(BaseHTTPRequestHandler):
             return {
                 "ok": True,
                 "message": (
-                    "Autoswitch đã tạm dừng — lựa chọn tay của bạn sẽ đứng yên"
+                    "Autoswitch paused — your manual choice will stay put"
                     if paused
-                    else "Autoswitch đã bật lại"
+                    else "Autoswitch resumed"
                 ),
                 "output": "",
                 "payload": {"paused": paused},
             }
+        if route == "/api/threshold":
+            value = body.get("value")
+            # Reject the container types json.loads can hand us before str()
+            # turns them into something that parses as a number by accident
+            # (str(True) is "True", but a list would stringify to garbage that
+            # produces a confusing error message rather than a clear one).
+            if not isinstance(value, (int, float, str)) or isinstance(value, bool):
+                raise ValueError("value must be a number")
+            return svc.set_threshold(str(value))
         if route == "/api/refresh":
             return {"ok": True, "message": "refreshed", "output": "", "payload": None}
         return None
