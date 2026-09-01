@@ -1,0 +1,6 @@
+# The build context is uploaded to the Docker daemon and cached by BuildKit.
+# .env holds the dashboard token and is needed by compose, not by the image.
+.env
+.env.*
+!.env.example
+README.md

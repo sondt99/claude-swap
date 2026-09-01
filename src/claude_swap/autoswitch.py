@@ -503,6 +503,7 @@ class TickOutcome(enum.Enum):
     ERROR = 1
     NO_ACTION = 2
     BLOCKED = 3  # wanted to switch but no viable target / all exhausted
+    PAUSED = 4  # held off by the pause flag; never evaluated
 
 
 # Quarantine state persisted fingerprints from a local refresh-token-only
@@ -919,7 +920,12 @@ class AutoSwitchEngine:
             self._unhealthy_ticks = 0
             self._idle_hold_since = None
             self._emit(NoSwitchEvent(reason="paused", detail="autoswitch held off"))
-            return TickOutcome.NO_ACTION
+            # Distinct from NO_ACTION so `--once` can tell a supervisor "an
+            # operator held this off" apart from "evaluated, nothing needed".
+            # _next_delay has no branch for it, which is correct: it falls
+            # through to the normal jittered interval, so an unpause is noticed
+            # within one tick.
+            return TickOutcome.PAUSED
 
         settings = self.settings
         state = self._read_state()

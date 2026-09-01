@@ -72,12 +72,40 @@ tick loop runs a fresh `cswap auto --once` each time, so settings are re-read
 every tick:
 
     cswap config set autoswitch.threshold 90
-    cswap config set autoswitch.intervalSeconds 15
     cswap config set autoswitch.cooldownSeconds 60
     cswap config set autoswitch.hysteresisPct 5
 
-(`cswap auto`'s own loop reads settings *once at startup*, which is one of the
-two reasons `autoswitch-loop.sh` replaces it — see that file.)
+(`cswap auto`'s own loop reads settings *once at startup*, which is why
+`autoswitch-loop.sh` replaces it — see that file.)
+
+**`autoswitch.intervalSeconds` does nothing here.** `cswap auto --once`
+evaluates once and returns without consulting it; only the built-in loop reads
+it, and that loop is the thing being replaced. The cadence belongs to whatever
+drives the ticks, so set it there:
+
+    # deploy/.env
+    CSWAP_TICK_S=15
+
+Changing it needs `docker compose up -d` (it is an environment variable, not a
+setting the tick re-reads).
+
+### Tick exit codes
+
+`cswap auto --once` reports the outcome in its exit status, which is what
+`autoswitch-loop.sh` reads to decide whether a tick actually ran:
+
+| code | meaning |
+|---|---|
+| 0 | switched |
+| 1 | error (transient network/lock problems land here) |
+| 2 | evaluated, nothing to do |
+| 3 | wanted to switch but no viable target / all exhausted |
+| 4 | held off by the pause flag; never evaluated |
+
+Only 1 (and anything unexpected) counts as a failure. The loop gives up after
+`CSWAP_MAX_FAILS` consecutive failures and exits non-zero so the restart policy
+can act — previously every failure was swallowed and a permanently broken loop
+still reported the container as healthy.
 
 ### Pause
 
@@ -117,7 +145,7 @@ Three things to know about the threshold:
    docstring says 90 was picked over 95 to leave "margin for ... heavy subagent
    turns burning past the mark before a swap lands". At 99.9 you switch at the
    wall, so a burst can exhaust the window before the swap lands.
-   `intervalSeconds 15` (the minimum) narrows that gap but cannot close it.
+   a shorter `CSWAP_TICK_S` narrows that gap but cannot close it.
 
 Also note `autoswitch.hysteresisPct`: a candidate must beat the active account's
 headroom by that margin. At threshold 90 / hysteresis 5, a candidate needs to be
@@ -175,12 +203,6 @@ home directory, and containerising buys no isolation here, because the app's
 whole job is mutating host credential files. If that bothers you, plain
 `cswap web` does the same work natively, with no mount surface at all.
 
-### Mount destination gotcha
-
-This Docker only auto-creates **one level** of a missing mount destination.
-`$HOME` → `/home/sondt23` works because `/home` already exists in the image. A
-deeper destination (e.g. `/opt/a/b/c/d`) mounts **silently empty** — no error,
-just nothing there. `mkdir -p` it in the Dockerfile if you ever need one.
 
 ## Troubleshooting: "the engine looks dead"
 
@@ -199,7 +221,7 @@ independently of logs:
 ## Troubleshooting: "it switched too late"
 
 Symptom: an account hits its 5h limit and the engine only reacts minutes later.
-The engine ticks every `intervalSeconds`, but it decides on whatever the usage
+The engine ticks every `CSWAP_TICK_S`, but it decides on whatever the usage
 store last managed to *fetch* — so the real question is data freshness, not tick
 rate. Check it:
 

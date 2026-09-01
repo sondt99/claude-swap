@@ -297,7 +297,7 @@ class TestEnginePauseGate:
         engine = self._engine(tmp_path, monkeypatch)
         paths.autoswitch_pause_file().touch()
 
-        assert engine.tick() is TickOutcome.NO_ACTION
+        assert engine.tick() is TickOutcome.PAUSED
         assert self.reached == [], "evaluated past the pause gate"
         assert any(getattr(e, "reason", "") == "paused" for e in self.emitted)
 
@@ -389,3 +389,30 @@ class TestPrereleaseIsNotAnnounced:
         monkeypatch.setattr(update_check, "read_cache", lambda *_a, **_k: "0.27.0")
         msg = update_check.check_for_update("0.26.0")
         assert msg and "0.27.0" in msg
+
+
+class TestPausedExitCode:
+    """`--once` exit codes are a supervisor's only signal, so "an operator held
+    this off" must not be indistinguishable from "nothing to do"."""
+
+    def test_paused_has_its_own_outcome_value(self):
+        from claude_swap.autoswitch import TickOutcome
+
+        assert TickOutcome.PAUSED.value == 4
+        assert TickOutcome.PAUSED is not TickOutcome.NO_ACTION
+        # The existing codes are a documented contract; adding one must not
+        # renumber them.
+        assert (TickOutcome.SWITCHED.value, TickOutcome.ERROR.value) == (0, 1)
+        assert (TickOutcome.NO_ACTION.value, TickOutcome.BLOCKED.value) == (2, 3)
+
+    def test_a_paused_tick_keeps_the_normal_cadence(self, tmp_path, monkeypatch):
+        """PAUSED has no branch in _next_delay on purpose: it must fall through
+        to the jittered interval so an unpause is noticed within one tick, not
+        after the 300s idle-hold fallback."""
+        from claude_swap.autoswitch import TickOutcome
+
+        engine = TestEnginePauseGate()._engine(tmp_path, monkeypatch)
+        engine._respect_poll_plan = lambda d: d
+        delay = engine._next_delay(TickOutcome.PAUSED)
+        interval = engine.settings.interval_seconds
+        assert interval * 0.9 <= delay <= interval * 1.1

@@ -118,6 +118,8 @@
     font-variant-numeric: tabular-nums; font-weight: 600; color: var(--ink);
   }
   .ctl-hint { flex: none; color: var(--faint); }
+  /* Marks a stored threshold the stepped handle cannot express exactly. */
+  .ctl-row output.approx { text-decoration: underline dotted; cursor: help; }
   @media (max-width: 560px) { .ctl-hint { display: none; } }
 
   /* ---- meter ----
@@ -629,12 +631,25 @@ let thrHoldUntil = 0;
 
 const fmtThr = (v) => String(Math.round(v * 10) / 10);
 
+const SLIDER_STEP = 0.1;
+
 function syncSlider() {
-  // No rounding: step is 0.1 and the spec range is 50-99.9, so a config of
-  // 99.9 must round-trip. Rounding to an integer here meant merely focusing
-  // the handle silently rewrote 99.9 to 99.
+  // No rounding of THRESHOLD itself: step is 0.1 and the spec range is
+  // 50-99.9, so a config of 99.9 must round-trip. Rounding to an integer here
+  // meant merely focusing the handle silently rewrote 99.9 to 99.
   thr.value = String(THRESHOLD);
+  // The <output> shows the STORED value, which is authoritative. A range input
+  // snaps its own value to the step on assignment, so a threshold set from the
+  // CLI to something like 87.35 leaves the handle at 87.3 while this reads
+  // 87.35. Say so rather than showing two unexplained numbers.
+  const snapped = Math.round(THRESHOLD / SLIDER_STEP) * SLIDER_STEP;
+  const aligned = Math.abs(snapped - THRESHOLD) < 1e-9;
   thrVal.textContent = fmtThr(THRESHOLD) + "%";
+  thrVal.title = aligned
+    ? ""
+    : `Stored value is ${THRESHOLD}%. The handle steps by ${SLIDER_STEP}, so ` +
+      `moving it will round to ${fmtThr(snapped)}%.`;
+  thrVal.classList.toggle("approx", !aligned);
 }
 
 thr.addEventListener("input", () => {

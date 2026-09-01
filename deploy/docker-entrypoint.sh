@@ -24,6 +24,20 @@ if ! "${VENV}/python" -c 'import claude_swap' 2>/dev/null; then
   exit 1
 fi
 
+# Importability is not what the CMDs actually need. Both invoke the `cswap`
+# console script, and a venv where that is missing, unexecutable, or too old to
+# know the subcommand passed the import check and then failed on every tick --
+# silently, because the loop swallowed it. Fail here instead.
+if [ ! -x "${VENV}/cswap" ]; then
+  echo "cswap-web: no executable cswap at ${VENV}/cswap" >&2
+  echo "  the venv imports claude_swap but has no console script; reinstall it" >&2
+  exit 1
+fi
+if ! "${VENV}/cswap" --version >/dev/null 2>&1; then
+  echo "cswap-web: ${VENV}/cswap is present but does not run" >&2
+  exit 1
+fi
+
 PATH="${VENV}:${PATH}"
 export PATH
 

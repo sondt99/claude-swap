@@ -15,12 +15,11 @@
 # fsutil.replace_with_retry -> os.replace), and renaming onto a Docker
 # single-file bind mount fails with EBUSY, which that helper only retries for
 # Windows error codes. Mounting the parent directory is what makes the rename
-# land on the host. Note also that this Docker only auto-creates ONE level of
-# missing mount destination — $HOME lands because /home already exists in the
-# image; a deeper target would silently mount empty.
+# land on the host.
 
-# Only `web` declares build: both services share one image, and letting them
-# build it concurrently makes the second export fail with "already exists".
+# Only `web` declares build:, so there is one image and one build. Compose
+# builds every buildable service before starting any, so nothing here depends
+# on start order to get the image built.
 x-common: &common
   image: cswap-web:1
   user: "${HOST_UID}:${HOST_GID}"
@@ -33,6 +32,10 @@ x-common: &common
     # (Diagnosed 2026-09-01: last visible log line was three days stale while
     # autoswitch_state.json showed a switch minutes earlier.)
     PYTHONUNBUFFERED: "1"
+    # Cadence for the tick loop. autoswitch.intervalSeconds does NOT apply
+    # here: `cswap auto --once` evaluates once and returns, so the interval
+    # belongs to whatever drives it — this.
+    CSWAP_TICK_S: "${CSWAP_TICK_S:-15}"
   volumes:
     - "${HOST_HOME:?set HOST_HOME in deploy/.env}:${HOST_HOME}"
     - /etc/localtime:/etc/localtime:ro
@@ -101,8 +104,23 @@ services:
     <<: *common
     container_name: cswap-auto
     depends_on:
-      - web  # only to order the shared image build, not a runtime dependency
+      # Start order only. This does NOT order builds — compose builds before it
+      # starts anything — and `auto` has no build: to order anyway. Kept so the
+      # dashboard is up by the time the first tick logs.
+      - web
     # The autoswitch engine, driven by our own tick loop rather than `cswap
-    # auto`'s built-in one — see autoswitch-loop.sh for why (pause support,
-    # and settings.json re-read every tick instead of once at startup).
+    # auto`'s built-in one — see autoswitch-loop.sh for why (settings.json is
+    # re-read every tick instead of once at startup).
     command: ["/usr/local/bin/autoswitch-loop.sh"]
+    # Asserts the engine is TICKING, not merely that a process exists: the loop
+    # touches the heartbeat only after a tick that actually evaluated, so a
+    # permanently failing `cswap` no longer reads as healthy. Allowed staleness
+    # is four intervals, which tolerates one slow usage fetch.
+    healthcheck:
+      test: ["CMD-SHELL",
+             "hb=\"${XDG_DATA_HOME:-$$HOME/.local/share}/claude-swap/.autoloop-heartbeat\"; test -f \"$$hb\" && test $$(( $$(date +%s) - $$(stat -c %Y \"$$hb\") )) -lt $$(( ${CSWAP_TICK_S:-15} * 4 ))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      # The first tick has to land before this can pass.
+      start_period: 60s
