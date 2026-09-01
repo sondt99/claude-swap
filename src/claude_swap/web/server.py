@@ -39,8 +39,10 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from claude_swap import __version__ as CSWAP_VERSION
+from claude_swap import paths
 from claude_swap.exceptions import ClaudeSwitchError
 from claude_swap.json_output import usage_to_json
+from claude_swap.locking import FileLock
 from claude_swap.settings import load_settings, set_setting
 from claude_swap.switcher import ClaudeAccountSwitcher
 from claude_swap.tui.data import (
@@ -144,20 +146,29 @@ def account_to_json(acc) -> dict:
 STALE_AFTER_S = 900.0
 
 # Presence of this file holds the autoswitch engine off. A file rather than an
-# in-process flag because the engine runs in a *different container*; both see
-# it through the shared home mount. autoswitch-loop.sh checks it each tick.
-PAUSE_FILE = Path.home() / ".cswap-web-paused"
+# in-process flag because the engine may run in a *different container*; both
+# see it through the shared home mount. The path lives in paths.py so the
+# engine's own tick honours the same file — this used to be spelled here and
+# read only by the deployment's shell loop, which made the toggle a no-op for
+# anyone running a native `cswap auto`.
+#
+# Resolved per call, never cached in a module constant: the engine resolves it
+# at tick time, and a constant would freeze whatever Path.home() happened to be
+# at import. The two would then disagree — the dashboard writing one path while
+# the engine consults another — which is precisely the silent no-op this was
+# meant to end.
 
 
 def autoswitch_paused() -> bool:
-    return PAUSE_FILE.exists()
+    return paths.autoswitch_pause_file().exists()
 
 
 def set_autoswitch_paused(paused: bool) -> None:
+    flag = paths.autoswitch_pause_file()
     if paused:
-        PAUSE_FILE.touch(mode=0o600, exist_ok=True)
+        flag.touch(mode=0o600, exist_ok=True)
     else:
-        PAUSE_FILE.unlink(missing_ok=True)
+        flag.unlink(missing_ok=True)
 
 
 def snapshot_to_json(snap, threshold: float | None = None) -> dict:
@@ -309,8 +320,16 @@ class Service:
 
         No restart is needed for this to take effect: the tick loop runs a fresh
         ``cswap auto --once`` each time and re-reads settings.json on every one.
+
+        ``set_setting`` is a read-modify-write, and its write is atomic but its
+        read is not part of that atomicity — two concurrent setters each keep
+        the file well-formed while one silently discards the other's key. The
+        in-process lock alone would not be enough (the menu bar writes the same
+        file from another process), so take the store's own file lock, which is
+        what every other cross-process mutation here serializes on.
         """
-        value = set_setting(self.switcher.backup_dir, "autoswitch.threshold", raw)
+        with self._lock, FileLock(self.switcher.lock_file):
+            value = set_setting(self.switcher.backup_dir, "autoswitch.threshold", raw)
         self.nudge()
         return {
             "ok": True,
@@ -477,8 +496,24 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authed(parse_qs(parsed.query)):
             return self._deny(HTTPStatus.UNAUTHORIZED, "missing or bad token")
 
-        length = int(self.headers.get("Content-Length") or 0)
-        if length > 64_000:
+        # Bound BOTH ends, and parse defensively. A negative Content-Length
+        # clears an upper-bound-only check, is truthy, and then reaches
+        # rfile.read(-1) — which means "read to EOF": the 64 KB cap is skipped
+        # and, if the peer never closes, the handler thread blocks forever
+        # holding its socket. A non-integer header must not raise out of here
+        # either; ValueError is not caught below and would 500.
+        # Both rejections below leave the body unread in the socket. This is
+        # HTTP/1.1, so the connection would otherwise be kept alive and the
+        # next readline() would parse those leftover body bytes as a request
+        # line. Close instead of trying to drain a length we just declared
+        # untrustworthy.
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            self.close_connection = True
+            return self._deny(HTTPStatus.BAD_REQUEST, "bad Content-Length")
+        if not 0 <= length <= 64_000:
+            self.close_connection = True
             return self._deny(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "body too large")
         raw = self.rfile.read(length) if length else b"{}"
         try:

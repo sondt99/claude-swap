@@ -108,6 +108,18 @@ def get_backup_root() -> Path:
     return get_legacy_backup_root()
 
 
+def autoswitch_pause_file() -> Path:
+    """Presence of this file holds the auto-switch engine off.
+
+    Spelled here rather than at each use so the engine and every front-end
+    agree on one path. It deliberately sits in the home directory, not the
+    backup root: the web dashboard and the engine can run in *different
+    containers* sharing only the mounted home, and the name is kept as-is for
+    compatibility with deployments that already touch it directly.
+    """
+    return Path.home() / ".cswap-web-paused"
+
+
 # Names that any prior cswap run may have created in the backup root without
 # user data being present (logger output, update-check + usage cache). The
 # migration treats a target containing only these as effectively empty, since

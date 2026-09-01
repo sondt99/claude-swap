@@ -24,7 +24,6 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /app
 # server.py and index.html are no longer copied: they live in the wheel now, so
 # copying them would create a second, silently-diverging copy of the frontend.
 COPY docker-entrypoint.sh autoswitch-loop.sh /usr/local/bin/
@@ -35,4 +34,4 @@ RUN chmod +x /usr/local/bin/docker-entrypoint.sh /usr/local/bin/autoswitch-loop.
 
 EXPOSE 8787
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
-CMD ["cswap", "web", "--host", "0.0.0.0", "--port", "8787", "--no-browser"]
+CMD ["cswap", "web", "--bind", "0.0.0.0", "--port", "8787", "--no-browser"]

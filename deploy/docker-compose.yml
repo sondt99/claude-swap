@@ -34,9 +34,32 @@ x-common: &common
     # autoswitch_state.json showed a switch minutes earlier.)
     PYTHONUNBUFFERED: "1"
   volumes:
-    - "${HOST_HOME}:${HOST_HOME}"
+    - "${HOST_HOME:?set HOST_HOME in deploy/.env}:${HOST_HOME}"
     - /etc/localtime:/etc/localtime:ro
   restart: unless-stopped
+  # PID 1 discards default-disposition signals, so a plain `sh` loop never sees
+  # SIGTERM: every `docker compose down` waited the full grace period and then
+  # SIGKILLed, with a small chance of landing mid-switch (each file write is
+  # atomic, but the credential/config/sequence trio is not). tini forwards it.
+  init: true
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  # Neither service writes to the rootfs; everything lands in the mounted home.
+  # /tmp still has to exist and be writable — plenty of stdlib paths assume it
+  # — so it is a tmpfs rather than a writable image layer.
+  read_only: true
+  tmpfs:
+    - /tmp
+  pids_limit: 256
+  # The engine emits ~8k lines/day and json-file defaults to no rotation, so
+  # this grew unbounded in /var/lib/docker.
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
 
 services:
   web:
@@ -47,6 +70,10 @@ services:
     environment:
       HOME: "${HOST_HOME}"
       TZ: "${TZ:-Asia/Ho_Chi_Minh}"
+      # Repeated from x-common on purpose: `<<:` REPLACES `environment:`
+      # wholesale rather than merging it, so anything this block does not
+      # restate is dropped for this service alone.
+      PYTHONUNBUFFERED: "1"
       # No token: http://127.0.0.1:8787/ opens straight up. Deliberate —
       # loopback bind, Origin check and Host pin still block anything coming
       # through a browser; what this concedes is that any *local* process can

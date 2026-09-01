@@ -1078,7 +1078,10 @@ The original flag spellings (%(prog)s --switch, %(prog)s --list, ...) keep worki
         help="Specify slot number when adding account (use with 'add' or 'add-token')",
     )
     parser.add_argument(
-        "--host",
+        # Spelled --bind, not --host: --host would make the long-standing
+        # `cswap --h` abbreviation of --help ambiguous, which is a silent
+        # regression for anyone with it in muscle memory or a script.
+        "--bind",
         default=None,
         metavar="ADDR",
         help=(
@@ -1310,9 +1313,9 @@ The original flag spellings (%(prog)s --switch, %(prog)s --list, ...) keep worki
     # so a container exporting that env for its web service would otherwise make
     # every other subcommand error out.
     if (
-        args.host is not None or args.port is not None or args.no_browser
+        args.bind is not None or args.port is not None or args.no_browser
     ) and not args.web:
-        parser.error("--host, --port and --no-browser can only be used with 'web'")
+        parser.error("--bind, --port and --no-browser can only be used with 'web'")
 
     # Self-upgrade runs before switcher init so we don't touch config/keychain
     # just to upgrade the tool itself.
@@ -1421,7 +1424,7 @@ The original flag spellings (%(prog)s --switch, %(prog)s --list, ...) keep worki
             sys.exit(
                 web_run(
                     switcher,
-                    host=args.host or "127.0.0.1",
+                    host=args.bind or "127.0.0.1",
                     port=args.port or 8787,
                     open_browser=not args.no_browser,
                     no_auth=args.no_auth,

@@ -45,6 +45,12 @@
     }
   }
   * { box-sizing: border-box; }
+  /* The UA rule for [hidden] is `display: none`, which ANY author `display`
+     out-ranks — and several things hidden here (.hero, .meter, .scoped) carry
+     `display: flex`. Without this, `el.hidden = true` is a silent no-op and a
+     meter keeps showing the previous snapshot's percentage after its data goes
+     away. Must out-rank those author rules, hence !important. */
+  [hidden] { display: none !important; }
   body {
     margin: 0;
     background: var(--bg);
@@ -254,7 +260,7 @@
         <!-- Bounds mirror autoswitch.threshold's own spec (50–99.9). The server
              re-checks via set_setting regardless; this only keeps the handle
              from offering a value that would be rejected. -->
-        <input type="range" id="thr" min="50" max="99" step="1" value="90"
+        <input type="range" id="thr" min="50" max="99.9" step="0.1" value="90"
                aria-describedby="hero-meta">
         <output id="thr-val" for="thr">90%</output>
       </div>
@@ -289,7 +295,7 @@ function setDisabled(v) {
 }
 
 async function post(path, body) {
-  if (busy) return;
+  if (busy) return false;
   busy = true;
   setDisabled(true);
   try {
@@ -300,8 +306,10 @@ async function post(path, body) {
     });
     const j = await r.json().catch(() => ({ ok: false, message: "bad response" }));
     toast(j.message || (j.ok ? "done" : "failed"), j.ok ? "ok" : "err");
+    return !!j.ok;
   } catch (e) {
     toast(String(e), "err");
+    return false;
   } finally {
     busy = false;
     setDisabled(false);
@@ -370,7 +378,18 @@ function makeMeter(label) {
 }
 
 function paintMeter(m, w, showTick) {
-  if (!w) { m.el.hidden = true; return; }
+  if (!w) {
+    // Belt and braces: blank the numbers as well as hiding the row. A stale
+    // percentage presented as current is worse than no percentage, so it must
+    // not survive even if the hide rule is ever defeated again.
+    m.el.hidden = true;
+    m.val.textContent = "";
+    m.chipSlot.textContent = "";
+    m.when.textContent = "";
+    m.fill.style.width = "0%";
+    m.pace.hidden = true;
+    return;
+  }
   m.el.hidden = false;
   const pct = clampPct(w.pct);
   const s = sevOf(pct);
@@ -488,6 +507,11 @@ function renderCards(acc) {
       '<div class="empty">No accounts managed yet. Use <code>cswap add</code> to add one.</div>';
     return;
   }
+  // Drop an empty-state placeholder from a previous render: it is not tracked
+  // in `cards`, so nothing below would ever remove it and it lingered as an
+  // extra grid cell alongside the real accounts.
+  const stale = grid.querySelector(".empty");
+  if (stale) stale.remove();
   const seen = new Set();
   acc.forEach((a, i) => {
     seen.add(a.number);
@@ -580,7 +604,10 @@ let thrHoldUntil = 0;
 const fmtThr = (v) => String(Math.round(v * 10) / 10);
 
 function syncSlider() {
-  thr.value = String(Math.round(THRESHOLD));
+  // No rounding: step is 0.1 and the spec range is 50-99.9, so a config of
+  // 99.9 must round-trip. Rounding to an integer here meant merely focusing
+  // the handle silently rewrote 99.9 to 99.
+  thr.value = String(THRESHOLD);
   thrVal.textContent = fmtThr(THRESHOLD) + "%";
 }
 
@@ -595,7 +622,19 @@ thr.addEventListener("input", () => {
 
 thr.addEventListener("change", () => {
   thrHoldUntil = Date.now() + 6000;
-  post("/api/threshold", { value: Number(thr.value) });
+  post("/api/threshold", { value: Number(thr.value) }).then((ok) => {
+    // On rejection drop the hold immediately so the next snapshot restores the
+    // real value. Without this the page kept displaying — and drawing every
+    // tick against — a threshold the server had refused.
+    if (!ok) {
+      thrHoldUntil = 0;
+      if (lastSnap && typeof lastSnap.threshold === "number") {
+        THRESHOLD = lastSnap.threshold;
+        syncSlider();
+        paint(lastSnap);
+      }
+    }
+  });
 });
 
 function paint(s) {
@@ -612,7 +651,9 @@ function paint(s) {
 function render(s) {
   if (s.error) { toast(s.error, "err"); return; }
   lastSnap = s;
-  if (typeof s.threshold === "number" && s.threshold > 0 && Date.now() > thrHoldUntil) {
+  // Number.isFinite, not typeof: `typeof null` is "object" but NaN/Infinity are
+  // "number", and a non-finite threshold would poison every tick position.
+  if (Number.isFinite(s.threshold) && s.threshold > 0 && Date.now() > thrHoldUntil) {
     THRESHOLD = s.threshold;
     syncSlider();
   }

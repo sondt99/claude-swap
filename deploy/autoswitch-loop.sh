@@ -18,8 +18,18 @@ set -u
 
 PAUSE_FILE="${HOME}/.cswap-web-paused"
 TICK_S="${CSWAP_TICK_S:-15}"
+# A non-numeric value makes `sleep` fail instantly, turning the loop into a
+# fork bomb that spawns `cswap auto --once` hundreds of times a second against
+# the credential store. Measured at ~574 iterations/sec before this guard.
+case "${TICK_S}" in
+    ''|*[!0-9]*) echo "invalid CSWAP_TICK_S='${TICK_S}', using 15" >&2; TICK_S=15 ;;
+esac
 
 echo "autoswitch loop: every ${TICK_S}s, pause file ${PAUSE_FILE}"
+
+# `init: true` in compose handles this too, but a trap keeps a bare
+# `docker run` of this image well-behaved as well.
+trap 'exit 0' TERM INT
 
 was_paused=""
 while true; do

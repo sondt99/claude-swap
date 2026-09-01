@@ -42,7 +42,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import ClassVar
 
-from claude_swap import oauth, poll_policy
+from claude_swap import oauth, paths, poll_policy
 from claude_swap.exceptions import ClaudeSwitchError
 from claude_swap.json_output import SCHEMA_VERSION, USAGE_TOKEN_EXPIRED
 from claude_swap.locking import FileLock
@@ -879,6 +879,13 @@ class AutoSwitchEngine:
     def tick(self) -> TickOutcome:
         """Evaluate once: poll usage, maybe switch. Never raises."""
         try:
+            # Checked here, not in a front-end, so every caller honours it:
+            # `cswap auto`, `cswap auto --once`, the TUI's engine and the web
+            # dashboard alike. Held off before any polling so a pause also
+            # stops the usage requests, not just the switch.
+            if paths.autoswitch_pause_file().exists():
+                self._emit(NoSwitchEvent(reason="paused", detail="autoswitch held off"))
+                return TickOutcome.NO_ACTION
             return self._tick_inner()
         except ClaudeSwitchError as e:
             self._emit(ErrorEvent(message=str(e), transient=True))

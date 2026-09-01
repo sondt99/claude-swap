@@ -17,7 +17,28 @@ PYPI_URL = "https://pypi.org/pypi/claude-swap/json"
 
 
 def _parse_version(v: str) -> tuple[int, ...]:
-    return tuple(int(x) for x in v.split("."))
+    """Numeric release segment only.
+
+    A PEP 440 local version (``0.26.0b1+web.1``, what a self-built fork
+    carries) or a pre-release suffix used to raise ValueError here. The caller
+    swallows that, so the effect was a permanently silent update notifier on
+    exactly the builds most likely to be behind. Compare the release segment
+    and ignore the rest.
+    """
+    release = v.split("+", 1)[0]
+    parts: list[int] = []
+    for chunk in release.split("."):
+        digits = ""
+        for ch in chunk:
+            if not ch.isdigit():
+                break
+            digits += ch
+        if not digits:
+            break
+        parts.append(int(digits))
+    if not parts:
+        raise ValueError(f"no numeric release segment in {v!r}")
+    return tuple(parts)
 
 
 def _detect_install_method() -> str | None:
