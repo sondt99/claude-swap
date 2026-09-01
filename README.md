@@ -2,6 +2,64 @@
 
 Multi-account switcher for Claude Code. Easily switch between multiple Claude accounts without logging out, or let it switch for you before you hit a rate limit. Track usage for every account in a live dashboard, and run accounts in parallel. Works with both the Claude Code CLI and the VS Code extension.
 
+---
+
+## This fork
+
+A fork of [realiti4/claude-swap](https://github.com/realiti4/claude-swap) that adds a
+**browser dashboard** and runs entirely from source in Docker — nothing is installed
+on the host.
+
+Everything below this section is upstream's documentation and applies unchanged,
+**except** that the installation and uninstall instructions assume a host install
+this fork does not use. Start here instead.
+
+### `cswap web` — browser dashboard
+
+A single-page dashboard over the same hooks the TUI uses (`SnapshotSource.take`,
+`run_action`, `usage_to_json`) — no switching, OAuth, or usage logic of its own.
+Live 5h/7d usage per account, one-click switch/disable/alias, and a slider for the
+auto-switch threshold. It marks the engine's switch line on every meter, so a
+percentage is readable against the number that actually triggers a swap.
+
+```bash
+cswap web                       # http://127.0.0.1:8787/
+cswap web --port 9000 --no-browser
+```
+
+Binds loopback only. A per-run token is pinned to a SameSite=Strict cookie; Origin
+and Referer are rejected cross-site, the Host header is pinned against DNS
+rebinding, and no CORS headers are ever emitted. `CSWAP_WEB_NO_AUTH=1` disables the
+token — loopback, Origin and Host checks still apply, but any local process can then
+drive a switch.
+
+### Always-on deployment (`deploy/`)
+
+Two containers — the dashboard and the autoswitch engine — built from this source
+tree. The image carries its own interpreter and claude-swap, so **no host install is
+required**; only the credential store is bind-mounted.
+
+```bash
+cd deploy
+cp .env.example .env && chmod 600 .env
+docker compose up -d --build
+ln -sf "$PWD/cswap-host" ~/.local/bin/cswap   # keeps a `cswap` command on the host
+```
+
+Source changes need `--build`; there is no host install to refresh. See
+[`deploy/README.md`](deploy/README.md) for the full deployment notes.
+
+### Building from source without Docker
+
+```bash
+git clone https://github.com/sondt99/claude-swap.git
+cd claude-swap
+uv sync --locked && uv build
+uv tool install --force ./dist/claude_swap-*.whl
+```
+
+---
+
 ## Installation
 
 ### Using uv (recommended)
@@ -106,7 +164,7 @@ cswap auto --strategy consume-first   # burn the soonest-resetting account first
 - By default only the account-wide 5h/7d windows drive switching. If you work on one model and hit its **weekly per-model limit** first (e.g. Fable), add `--model Fable` (or `cswap config set autoswitch.model Fable`) to fold that model's window into the decision, so it switches off an account whose model quota is spent even while its 5h/7d windows still have room.
   - **Model names** are Anthropic's own per-model `display_name`s, matched case-insensitively. The exact strings for your accounts are the per-model rows in `cswap list` (e.g. a line reading `Fable: 100%`).
 
-For cron/systemd timers, `--once` reports the outcome in its exit code (`0` switched, `1` error, `2` nothing to do, `3` blocked — no viable target), and `--json` emits one JSON event per line:
+For cron/systemd timers, `--once` reports the outcome in its exit code (`0` switched, `1` error, `2` nothing to do, `3` blocked — no viable target, `4` held off by the pause flag), and `--json` emits one JSON event per line:
 
 ```bash
 */5 * * * * cswap auto --once --json >> ~/.cswap-auto.log 2>&1
@@ -198,6 +256,7 @@ cswap unclaimed                 # List stashed credential entries (slot + why th
 cswap unclaimed --purge ID      # Drop one (deletes its bytes; recover with /login + `cswap add`)
 cswap tui                       # Interactive dashboard (also: bare `cswap`)
 cswap watch                     # Dashboard, opened on the live watch page
+cswap web                       # Browser dashboard on 127.0.0.1 (this fork)
 cswap upgrade                   # Upgrade claude-swap to the latest version
 cswap purge                     # Remove all claude-swap data
 ```
@@ -215,7 +274,11 @@ The original flag spellings (`cswap --switch`, `cswap --list`, ...) keep working
 - Swaps only the account-specific Claude login when you switch accounts;
   live account-independent OAuth state (such as MCP server logins) is
   preserved instead of being overwritten by a slot's older snapshot
-- Account credentials stored securely using platform-appropriate methods
+- Account credentials are stored per platform: the **macOS Keychain** on macOS, and
+  **base64-encoded files** (mode `0600`, in a `0700` directory) on Linux/WSL and
+  Windows. Base64 is encoding, not encryption — on those platforms treat the files
+  under `credentials/` as plaintext secrets: readable by any process running as you,
+  and worth excluding from backups and cloud sync
 - Switches (manual and automatic) hold Claude Code's own credential locks while writing, so a swap never interleaves with a token refresh
 - Auto-switch freshens a target's token before activating it, and quarantines accounts whose refresh token has died (recover by re-adding it with `cswap add --slot N`, or by replacing its stored credentials from a known-good export — a plain `cswap import backup.cswap` replaces dead-token slots automatically)
 - Usage numbers refresh every few minutes — faster for an account being used or close to switching, slower for idle ones — keeping cswap comfortably inside Anthropic's rate limits however many dashboards you keep open on a machine. An age note like `· 6m ago` just means the next scheduled check hasn't come yet, not that something is stuck.
