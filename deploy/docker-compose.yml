@@ -1,14 +1,12 @@
 # Always-on cswap: web dashboard + autoswitch engine.
 #
-# Neither container ships claude-swap. Both run the uv tool venv from the
-# mounted home, so they execute the *same* install as your host `cswap` — one
-# copy, no version pinning, no drift, and `cswap` on the host stays
-# authoritative.
+# Both containers run claude-swap built INTO the image from the source tree in
+# this repo. Nothing is taken from the host except the credential store, so no
+# `cswap` needs to be installed on the host at all.
 #
-# The home directory is mounted at its *identical* path so every path
+# The home directory is still mounted at its *identical* path so every path
 # claude-swap derives (Path.home(), $XDG_DATA_HOME/claude-swap,
-# $HOME/.claude.json, and the venv itself) resolves to the same file the host
-# CLI uses, with no translation layer.
+# $HOME/.claude.json) resolves to the real file, with no translation layer.
 #
 # It has to be the whole home directory, not just the data files: claude-swap
 # publishes ~/.claude.json by atomic rename (switcher._write_json ->
@@ -68,7 +66,10 @@ services:
   web:
     <<: *common
     build:
-      context: .
+      # The repo root, not deploy/: the image builds claude-swap from source
+      # and needs pyproject.toml, uv.lock and src/.
+      context: ..
+      dockerfile: deploy/Dockerfile
     container_name: cswap-web
     environment:
       HOME: "${HOST_HOME}"
@@ -90,11 +91,11 @@ services:
     # 127.0.0.1 is what actually limits exposure.
     ports:
       - "127.0.0.1:8787:8787"
-    # CMD-SHELL, not CMD: healthchecks bypass the entrypoint, so the venv is
-    # not on PATH here and the interpreter needs its full path.
+    # Healthchecks bypass the ENTRYPOINT, so PATH is not set up here and the
+    # interpreter needs its full in-image path.
     healthcheck:
       test: ["CMD-SHELL",
-             "$$HOME/.local/share/uv/tools/claude-swap/bin/python -c \"import urllib.request;urllib.request.urlopen('http://127.0.0.1:8787/healthz',timeout=5)\""]
+             "/opt/cswap/bin/python -c \"import urllib.request;urllib.request.urlopen('http://127.0.0.1:8787/healthz',timeout=5)\""]
       interval: 30s
       timeout: 10s
       retries: 3

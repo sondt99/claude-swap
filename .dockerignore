@@ -1,0 +1,15 @@
+# Build context is the repo root (the image builds claude-swap from source).
+.git
+.venv
+dist
+build
+*.egg-info
+__pycache__
+**/__pycache__
+.pytest_cache
+# Never ship local deployment config: deploy/.env holds the dashboard token.
+deploy/.env
+deploy/.env.*
+!deploy/.env.example
+tests
+assets

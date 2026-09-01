@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# `cswap` on the host, without installing claude-swap on the host.
+#
+# The code lives only in the image now, so this routes the CLI into the running
+# web container. That container already has the credential store bind-mounted
+# at its real path and runs as your uid, so files it writes are indistinguishable
+# from ones a host install would have written.
+#
+# Install:  ln -sf "$PWD/deploy/cswap-host" ~/.local/bin/cswap
+set -euo pipefail
+
+CONTAINER="${CSWAP_CONTAINER:-cswap-web}"
+
+if ! docker inspect -f '{{.State.Running}}' "${CONTAINER}" 2>/dev/null | grep -q true; then
+  cat >&2 <<EOF
+cswap: container '${CONTAINER}' is not running.
+
+  The CLI lives in the image now, not on this host. Start the stack first:
+
+      cd <repo>/deploy && docker compose up -d
+
+  (Set CSWAP_CONTAINER to use a different container name.)
+EOF
+  exit 1
+fi
+
+# -t only when stdin is a terminal: with it unconditionally, piping or
+# redirecting output ("cswap list --json > f") gets CRLF-mangled and fails in
+# scripts; without it, interactive prompts have no terminal to draw on.
+if [ -t 0 ] && [ -t 1 ]; then
+  exec docker exec -it "${CONTAINER}" cswap "$@"
+fi
+exec docker exec -i "${CONTAINER}" cswap "$@"
