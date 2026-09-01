@@ -19,33 +19,81 @@ The base image and uv are pinned by *tag*, not digest, so two builds months
 apart can still differ in interpreter patch level and OS packages — the
 dependency set is reproducible, the whole image is not.
 
-From this directory:
+## Setup
 
 ```
-cp .env.example .env && chmod 600 .env   # first run only; fill in the values
-docker compose up --build -d      # start (rebuilds after a source change)
-docker compose logs -f auto       # watch the autoswitch engine
-docker compose down               # stop
+git clone https://github.com/sondt99/claude-swap.git
+cd claude-swap/deploy
+./setup.sh
 ```
 
-Source changes need `--build`; there is no host install to refresh.
+`setup.sh` derives everything from the machine it runs on — uid, gid, home path,
+system timezone — generates a dashboard token, writes `.env` at mode 600,
+installs the host `cswap` shim, builds the image from source and starts the
+stack. Nothing to fill in by hand, so the same clone behaves identically on any
+machine and for any user.
 
-### Keeping a `cswap` command
+Safe to re-run: an existing token and tick interval are preserved, so re-running
+does not invalidate the cookie already pinned in your browser.
 
-The CLI lives in the image now. `deploy/cswap-host` routes it into the running
-container, which has the store mounted at its real path and runs as your uid,
-so what it writes is indistinguishable from a host install's output:
-
-```
-ln -sf "$PWD/deploy/cswap-host" ~/.local/bin/cswap
-cswap list
-```
+When it finishes the dashboard is at:
 
     http://127.0.0.1:8787/
 
 No token, no login — `CSWAP_WEB_NO_AUTH: "1"` in `docker-compose.yml`. See
 [Security](#security) for exactly what that does and does not give up, and how
 to turn auth back on.
+
+Day to day:
+
+```
+docker compose up -d --build      # start (rebuild after a source change)
+docker compose logs -f auto       # watch the autoswitch engine
+docker compose down               # stop
+```
+
+Source changes need `--build`; there is no host install to refresh.
+
+### The `cswap` command
+
+`setup.sh` links it for you. The CLI lives in the image, and `deploy/cswap-host`
+routes it into the running container — which has the store mounted at its real
+path and runs as your uid, so what it writes is indistinguishable from a host
+install's output. To link it by hand:
+
+```
+ln -sf "$PWD/cswap-host" ~/.local/bin/cswap
+cswap list
+```
+
+## Moving to a new machine
+
+The image is disposable — it is rebuilt from this repo. What is *not* in the
+repo, and not recoverable without a backup, is the **credential store**: the
+accounts live on the host under `${XDG_DATA_HOME:-~/.local/share}/claude-swap/`,
+deliberately outside the image, so destroying every container and image can
+never take them with it.
+
+Take a portable backup while the stack is up:
+
+```
+cswap export ~/cswap-backup.cswap
+```
+
+Restore onto a fresh machine:
+
+```
+git clone https://github.com/sondt99/claude-swap.git
+cd claude-swap/deploy && ./setup.sh
+cswap import ~/cswap-backup.cswap
+```
+
+Two things worth knowing about that file. It is **plaintext JSON** carrying OAuth
+refresh tokens — treat it exactly like a password, and encrypt it if it leaves
+the machine (`cswap export - | gpg -c > backup.gpg`). And by default it carries
+only each account's own login; machine-shared MCP/plugin OAuth state and the
+device token stay behind. `--full` includes those, which is what you want for a
+same-machine restore and not what you want for a copy that travels.
 
 ## What it does
 

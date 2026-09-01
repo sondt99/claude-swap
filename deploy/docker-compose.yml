@@ -23,7 +23,7 @@ x-common: &common
   user: "${HOST_UID}:${HOST_GID}"
   environment:
     HOME: "${HOST_HOME}"
-    TZ: "${TZ:-Asia/Ho_Chi_Minh}"
+    TZ: "${TZ:-UTC}"
     # Without this, Python block-buffers stdout whenever it is a pipe — which
     # it always is under Docker. `cswap auto` then logs nothing for hours and
     # the engine looks dead while it is in fact switching accounts normally.
@@ -73,7 +73,7 @@ services:
     container_name: cswap-web
     environment:
       HOME: "${HOST_HOME}"
-      TZ: "${TZ:-Asia/Ho_Chi_Minh}"
+      TZ: "${TZ:-UTC}"
       # Repeated from x-common on purpose: `<<:` REPLACES `environment:`
       # wholesale rather than merging it, so anything this block does not
       # restate is dropped for this service alone.
