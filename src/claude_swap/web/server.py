@@ -86,7 +86,7 @@ HELP_PAGE = """<!doctype html>
 <div class="c">
   <h1>Cần token để mở dashboard</h1>
   <p>Lấy token trên máy bạn:</p>
-  <code>grep CSWAP_WEB_TOKEN ~/cswap-web/.env</code>
+  <code>grep CSWAP_WEB_TOKEN deploy/.env</code>
   <p>Rồi mở <b>một lần duy nhất</b> với token đó:</p>
   <code>http://127.0.0.1:8787/?token=&lt;token&gt;</code>
   <p>Sau lần đó token được ghim vào cookie (1 năm) — từ đó vào thẳng
