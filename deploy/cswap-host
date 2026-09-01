@@ -28,7 +28,15 @@ if ! docker info >/dev/null 2>&1; then
   (This is distinct from the container being down.)"
 fi
 
-state=$(docker inspect -f '{{.State.Status}}' "${CONTAINER}" 2>/dev/null || echo missing)
+# Strip whitespace before matching. For an unknown container `docker inspect`
+# writes an empty line to stdout AND fails, so a bare `|| echo missing` yields
+# "\nmissing", which matches no case arm -- the helpful "start the stack"
+# message never fired and the generic arm printed a two-line mangled status.
+# `|| true` is required, not decorative: with `set -o pipefail` the failing
+# `docker inspect` fails the whole pipeline, and `set -e` would exit here with
+# status 1 before the check below ever ran -- silently, with no message.
+state=$(docker inspect -f '{{.State.Status}}' "${CONTAINER}" 2>/dev/null | tr -d '[:space:]' || true)
+[ -n "${state}" ] || state=missing
 case "${state}" in
   running) ;;
   # A paused container passes a naive .State.Running check and then blocks the
