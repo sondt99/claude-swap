@@ -62,6 +62,12 @@ uv tool install --force ./dist/claude_swap-*.whl
 
 ## Installation
 
+> **This fork is not published to PyPI.** The `claude-swap` package these commands
+> install is upstream's, without `cswap web` or `deploy/`. To run *this* fork see
+> [This fork](#this-fork) above — either the Docker stack, which needs no host
+> install at all, or `uv build` + `uv tool install ./dist/*.whl` from a clone.
+> The rest of this section is upstream's and is kept verbatim.
+
 ### Using uv (recommended)
 
 ```bash
@@ -426,6 +432,18 @@ uv tool uninstall claude-swap
 # or
 pipx uninstall claude-swap
 ```
+
+> **On this fork**, there is usually no host install to remove. Tear the stack down
+> and drop the shim instead:
+>
+> ```bash
+> cd deploy && docker compose down
+> rm -f ~/.local/bin/cswap          # the shim symlink
+> docker image rm cswap-web:1
+> ```
+>
+> `cswap purge` still needs to run *before* that, while a container is up — it is
+> what deletes the credential store.
 
 ## Requirements
 
