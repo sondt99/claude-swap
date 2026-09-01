@@ -1195,6 +1195,8 @@ The original flag spellings (%(prog)s --switch, %(prog)s --list, ...) keep worki
     )
     group.add_argument(
         "--purge",
+        # Likewise, `--p` was unambiguous until --port arrived.
+        "--p",
         action="store_true",
         help=argparse.SUPPRESS,
     )
@@ -1216,6 +1218,10 @@ The original flag spellings (%(prog)s --switch, %(prog)s --list, ...) keep worki
     )
     group.add_argument(
         "--watch",
+        # `--w` was an unambiguous abbreviation until --web was added. Declared
+        # explicitly because an exact match beats prefix matching, so the
+        # abbreviation keeps resolving here rather than becoming an error.
+        "--w",
         action="store_true",
         help=argparse.SUPPRESS,
     )
@@ -1424,8 +1430,8 @@ The original flag spellings (%(prog)s --switch, %(prog)s --list, ...) keep worki
             sys.exit(
                 web_run(
                     switcher,
-                    host=args.bind or "127.0.0.1",
-                    port=args.port or 8787,
+                    host="127.0.0.1" if args.bind is None else args.bind,
+                    port=8787 if args.port is None else args.port,
                     open_browser=not args.no_browser,
                     no_auth=args.no_auth,
                 )

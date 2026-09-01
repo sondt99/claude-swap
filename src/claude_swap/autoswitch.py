@@ -879,13 +879,6 @@ class AutoSwitchEngine:
     def tick(self) -> TickOutcome:
         """Evaluate once: poll usage, maybe switch. Never raises."""
         try:
-            # Checked here, not in a front-end, so every caller honours it:
-            # `cswap auto`, `cswap auto --once`, the TUI's engine and the web
-            # dashboard alike. Held off before any polling so a pause also
-            # stops the usage requests, not just the switch.
-            if paths.autoswitch_pause_file().exists():
-                self._emit(NoSwitchEvent(reason="paused", detail="autoswitch held off"))
-                return TickOutcome.NO_ACTION
             return self._tick_inner()
         except ClaudeSwitchError as e:
             self._emit(ErrorEvent(message=str(e), transient=True))
@@ -900,6 +893,34 @@ class AutoSwitchEngine:
         self._sleep_until_ts = None
         self._blocked_wait_long = False
         self._idle_hold_slow = False
+
+        # Checked here, not in a front-end, so every caller honours it: `cswap
+        # auto`, `cswap auto --once`, the TUI's engine and the web dashboard
+        # alike.
+        #
+        # Placed AFTER the per-tick flags above and reached only for a real
+        # run, because both matter:
+        #
+        #   * Gating earlier left `_idle_hold_slow` set from the last real
+        #     tick, so a paused loop slept the 300s no-reset fallback and took
+        #     five minutes to notice being resumed.
+        #   * The debounce counters below are per-run, not per-tick. Skipping
+        #     the whole body froze them, so an engine that had seen 2 of the 3
+        #     unhealthy ticks needed for a failover kept that 2 across an
+        #     arbitrarily long pause and switched a live credential on the
+        #     first tick after resuming — on evidence that could be days old.
+        #     A pause means "stop evaluating", so the evidence is discarded.
+        #
+        # `dry_run` is exempt: it cannot switch anything, so there is nothing
+        # to hold off, and gating it froze the TUI's auto view entirely (that
+        # screen puts the app in store-only mode and relies on the engine for
+        # fetches, so pausing left nobody refreshing usage at all).
+        if not self.dry_run and paths.autoswitch_pause_file().exists():
+            self._unhealthy_ticks = 0
+            self._idle_hold_since = None
+            self._emit(NoSwitchEvent(reason="paused", detail="autoswitch held off"))
+            return TickOutcome.NO_ACTION
+
         settings = self.settings
         state = self._read_state()
         if not self.dry_run:

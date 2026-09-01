@@ -112,12 +112,25 @@ def autoswitch_pause_file() -> Path:
     """Presence of this file holds the auto-switch engine off.
 
     Spelled here rather than at each use so the engine and every front-end
-    agree on one path. It deliberately sits in the home directory, not the
-    backup root: the web dashboard and the engine can run in *different
-    containers* sharing only the mounted home, and the name is kept as-is for
-    compatibility with deployments that already touch it directly.
+    agree on one path.
+
+    It lives in the backup root, alongside every other piece of engine state,
+    for two reasons that a bare ``~/.cswap-web-paused`` got wrong:
+
+      * **Profile scoping.** The rest of the engine's state honours
+        ``XDG_DATA_HOME``, so a flag in ``$HOME`` meant pausing a work profile
+        silently paused the personal one too.
+      * **Test safety.** ``tests/conftest.py`` freezes the backup root as a
+        protected root, but its cheap-reject prefilter keys on path hints and
+        would not have recognised a novel ``.cswap-*`` name directly in
+        ``$HOME``. A test that leaked a write there would have created this
+        file in a real home and silently disabled a live engine — no error,
+        nothing in pytest output, and no command that reports it.
+
+    The cross-container case still works: compose mounts the home at its
+    identical path and both services derive the same backup root from it.
     """
-    return Path.home() / ".cswap-web-paused"
+    return get_backup_root() / ".paused"
 
 
 # Names that any prior cswap run may have created in the backup root without

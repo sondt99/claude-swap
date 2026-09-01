@@ -16,7 +16,6 @@
 # processes, and the exit code reports the outcome.
 set -u
 
-PAUSE_FILE="${HOME}/.cswap-web-paused"
 TICK_S="${CSWAP_TICK_S:-15}"
 # A non-numeric value makes `sleep` fail instantly, turning the loop into a
 # fork bomb that spawns `cswap auto --once` hundreds of times a second against
@@ -25,29 +24,20 @@ case "${TICK_S}" in
     ''|*[!0-9]*) echo "invalid CSWAP_TICK_S='${TICK_S}', using 15" >&2; TICK_S=15 ;;
 esac
 
-echo "autoswitch loop: every ${TICK_S}s, pause file ${PAUSE_FILE}"
+echo "autoswitch loop: every ${TICK_S}s"
 
 # `init: true` in compose handles this too, but a trap keeps a bare
 # `docker run` of this image well-behaved as well.
 trap 'exit 0' TERM INT
 
-was_paused=""
 while true; do
-    if [ -f "${PAUSE_FILE}" ]; then
-        # Log the transition, not every tick — otherwise a long pause buries
-        # the log in identical lines.
-        if [ "${was_paused}" != "yes" ]; then
-            echo "$(date +%H:%M:%S)  PAUSED — autoswitch held off, manual choice stands"
-            was_paused="yes"
-        fi
-    else
-        if [ "${was_paused}" = "yes" ]; then
-            echo "$(date +%H:%M:%S)  RESUMED — autoswitch active"
-        fi
-        was_paused="no"
-        # Never let a failed tick kill the loop: a transient network or lock
-        # error must not leave the engine permanently dead.
-        cswap auto --once || true
-    fi
+    # Pausing is no longer handled here. `cswap auto --once` consults the flag
+    # itself, so a second implementation in shell would only be a path that
+    # could drift out of step with the engine's — which is exactly the split
+    # that made the dashboard's pause button a no-op for native `cswap auto`.
+    #
+    # Never let a failed tick kill the loop: a transient network or lock error
+    # must not leave the engine permanently dead.
+    cswap auto --once || true
     sleep "${TICK_S}"
 done

@@ -24,7 +24,7 @@ class TestParseVersion:
     """A fork carries a PEP 440 local version; that must not kill the notifier."""
 
     def test_plain_release(self):
-        assert _parse_version("0.25.0") == (0, 25, 0)
+        assert _parse_version("0.25.0") == ((0, 25, 0), 1)
 
     @pytest.mark.parametrize(
         "raw,expected",
@@ -32,10 +32,10 @@ class TestParseVersion:
             # The exact string a self-built fork carries. This used to raise
             # ValueError, which check_for_update swallows -- so the builds most
             # likely to be behind were the ones permanently told nothing.
-            ("0.26.0b1+web.1", (0, 26, 0)),
-            ("0.26.0b1", (0, 26, 0)),
-            ("1.2.3+local", (1, 2, 3)),
-            ("1.2.3rc1", (1, 2, 3)),
+            ("0.26.0b1+web.1", ((0, 26, 0), 0)),
+            ("0.26.0b1", ((0, 26, 0), 0)),
+            ("1.2.3+local", ((1, 2, 3), 1)),
+            ("1.2.3rc1", ((1, 2, 3), 0)),
         ],
     )
     def test_local_and_prerelease_versions_parse(self, raw, expected):
@@ -43,6 +43,16 @@ class TestParseVersion:
 
     def test_ordering_still_works_across_a_local_version(self):
         assert _parse_version("0.26.0b1+web.1") > _parse_version("0.25.0")
+
+    def test_a_prerelease_sorts_below_its_own_final(self):
+        """Without the trailing flag these compared EQUAL, so someone on
+        0.26.0b1 would never be told that 0.26.0 had shipped -- the exact case
+        the leniency was added to fix."""
+        assert _parse_version("0.26.0") > _parse_version("0.26.0b1")
+        assert _parse_version("0.26.0") > _parse_version("0.26.0b1+web.1")
+
+    def test_release_numbers_still_dominate(self):
+        assert _parse_version("1.10.0") > _parse_version("1.9.0")
 
     def test_garbage_still_raises(self):
         with pytest.raises(ValueError):
@@ -72,22 +82,19 @@ class TestPauseFileIsShared:
         """The property the fix is about: what the dashboard WRITES is what the
         engine READS. A module-level constant froze Path.home() at import while
         the engine resolved it at tick time, so the two could diverge."""
-        monkeypatch.setattr(
-            paths.Path, "home", staticmethod(lambda: tmp_path)
-        )
+        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "a"))
         web_server.set_autoswitch_paused(True)
         # Read back through the engine's own accessor, not the server's.
         assert paths.autoswitch_pause_file().exists()
-        assert paths.autoswitch_pause_file().parent == tmp_path
 
-        # And it must follow a later home change rather than a snapshot.
-        other = tmp_path / "other"
-        other.mkdir()
-        monkeypatch.setattr(paths.Path, "home", staticmethod(lambda: other))
+        # And it must follow a later profile change rather than a snapshot --
+        # this is also the profile-scoping property: a second profile must not
+        # inherit the first one's pause.
+        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "b"))
         assert web_server.autoswitch_paused() is False
 
     def test_toggle_round_trips(self, tmp_path, monkeypatch):
-        flag = tmp_path / ".cswap-web-paused"
+        flag = tmp_path / ".paused"
         monkeypatch.setattr(paths, "autoswitch_pause_file", lambda: flag)
         assert web_server.autoswitch_paused() is False
         web_server.set_autoswitch_paused(True)
@@ -249,47 +256,94 @@ class TestEnginePauseGate:
     """The substance of the pause fix lives in autoswitch.tick(), which had no
     test at all -- the toggle was a no-op outside the Docker shell loop."""
 
-    def test_tick_returns_no_action_and_does_not_poll_when_paused(
+    def _engine(self, tmp_path, monkeypatch, *, dry_run=False):
+        """A bare engine: the gate runs before anything that needs a store.
+
+        Deliberately does NOT stub ``_tick_inner`` — the gate lives inside it,
+        so stubbing that method would test nothing. ``_read_state`` is the
+        first call after the gate, which makes it the seam.
+        """
+        from claude_swap.autoswitch import AutoSwitchEngine
+        from claude_swap.settings import AutoSwitchSettings
+
+        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+        paths.get_backup_root().mkdir(parents=True, exist_ok=True)
+        engine = AutoSwitchEngine.__new__(AutoSwitchEngine)
+        engine.dry_run = dry_run
+        # `_tick_inner` reads self.settings before _read_state, so a bare
+        # instance would raise AttributeError and never reach the seam.
+        engine.settings = AutoSwitchSettings()
+        engine._sleep_until_ts = None
+        engine._blocked_wait_long = False
+        engine._idle_hold_slow = False
+        engine._unhealthy_ticks = 0
+        engine._idle_hold_since = None
+        self.emitted: list = []
+        engine._emit = lambda event: self.emitted.append(event)
+        self.reached: list = []
+
+        def _read_state():
+            self.reached.append(True)
+            raise AssertionError("evaluated past the pause gate")
+
+        engine._read_state = _read_state
+        return engine
+
+    def test_paused_tick_short_circuits_before_touching_the_store(
         self, tmp_path, monkeypatch
     ):
-        from claude_swap.autoswitch import AutoSwitchEngine, TickOutcome
+        from claude_swap.autoswitch import TickOutcome
 
-        monkeypatch.setattr(paths.Path, "home", staticmethod(lambda: tmp_path))
-        engine = AutoSwitchEngine.__new__(AutoSwitchEngine)  # no store, no network
-        emitted: list = []
-        engine._emit = lambda event: emitted.append(event)
-
-        polled: list[bool] = []
-
-        def _inner():
-            polled.append(True)
-            return TickOutcome.NO_ACTION
-
-        engine._tick_inner = _inner
-
-        # Flag absent: the gate must not swallow a normal tick.
-        assert engine.tick() is TickOutcome.NO_ACTION
-        assert polled == [True]
-
-        # Flag present: short-circuits BEFORE polling, and says so.
+        engine = self._engine(tmp_path, monkeypatch)
         paths.autoswitch_pause_file().touch()
+
         assert engine.tick() is TickOutcome.NO_ACTION
-        assert polled == [True], "polled while paused"
-        assert any(getattr(e, "reason", "") == "paused" for e in emitted)
+        assert self.reached == [], "evaluated past the pause gate"
+        assert any(getattr(e, "reason", "") == "paused" for e in self.emitted)
 
-    def test_tick_polls_again_once_the_flag_is_gone(self, tmp_path, monkeypatch):
-        from claude_swap.autoswitch import AutoSwitchEngine, TickOutcome
+    def test_an_unpaused_tick_is_not_swallowed(self, tmp_path, monkeypatch):
+        engine = self._engine(tmp_path, monkeypatch)
+        # No flag: the gate must let the tick through to the store.
+        engine.tick()
+        assert self.reached == [True]
 
-        monkeypatch.setattr(paths.Path, "home", staticmethod(lambda: tmp_path))
-        engine = AutoSwitchEngine.__new__(AutoSwitchEngine)
-        engine._emit = lambda event: None
-        engine._tick_inner = lambda: TickOutcome.SWITCHED
+    def test_pausing_discards_the_failover_debounce(self, tmp_path, monkeypatch):
+        """The counters are per-run, not per-tick. Freezing them across a pause
+        meant an engine holding 2 of the 3 unhealthy ticks needed for a failover
+        kept that 2 indefinitely, then switched a live credential on the first
+        tick after resuming -- on evidence that could be days old."""
+        engine = self._engine(tmp_path, monkeypatch)
+        engine._unhealthy_ticks = 2
+        engine._idle_hold_since = 1.0
+        paths.autoswitch_pause_file().touch()
 
-        flag = paths.autoswitch_pause_file()
-        flag.touch()
-        assert engine.tick() is TickOutcome.NO_ACTION
-        flag.unlink()
-        assert engine.tick() is TickOutcome.SWITCHED
+        engine.tick()
+        assert engine._unhealthy_ticks == 0
+        assert engine._idle_hold_since is None
+
+    def test_a_paused_tick_clears_the_per_tick_sleep_flags(
+        self, tmp_path, monkeypatch
+    ):
+        """Gating before these were cleared left `_idle_hold_slow` set, so a
+        paused loop slept the 300s no-reset fallback instead of its interval."""
+        engine = self._engine(tmp_path, monkeypatch)
+        engine._idle_hold_slow = True
+        engine._blocked_wait_long = True
+        paths.autoswitch_pause_file().touch()
+
+        engine.tick()
+        assert engine._idle_hold_slow is False
+        assert engine._blocked_wait_long is False
+
+    def test_dry_run_is_not_pausable(self, tmp_path, monkeypatch):
+        """A dry run cannot switch, so there is nothing to hold off — and
+        gating it froze the TUI's auto view, which puts the app in store-only
+        mode and relies on the engine for fetches."""
+        engine = self._engine(tmp_path, monkeypatch, dry_run=True)
+        paths.autoswitch_pause_file().touch()
+
+        engine.tick()
+        assert self.reached == [True], "a dry run must keep evaluating"
 
 
 class TestPageStructure:
@@ -315,3 +369,23 @@ class TestPageStructure:
         hero_close = page.index("</section>", hero_open)
         assert 'id="thr"' not in page[hero_open:hero_close]
         assert 'id="thr"' in page
+
+
+class TestPrereleaseIsNotAnnounced:
+    """`uv tool upgrade` / `pipx upgrade` skip pre-releases without an opt-in,
+    so announcing one is a banner the user cannot act on, re-shown every 24h."""
+
+    def test_prerelease_on_pypi_is_not_announced(self, tmp_path, monkeypatch):
+        from claude_swap import update_check
+
+        monkeypatch.setattr(update_check, "CACHE_PATH", tmp_path / "c.json")
+        monkeypatch.setattr(update_check, "read_cache", lambda *_a, **_k: "0.27.0b1")
+        assert update_check.check_for_update("0.26.0") is None
+
+    def test_a_real_release_is_still_announced(self, tmp_path, monkeypatch):
+        from claude_swap import update_check
+
+        monkeypatch.setattr(update_check, "CACHE_PATH", tmp_path / "c.json")
+        monkeypatch.setattr(update_check, "read_cache", lambda *_a, **_k: "0.27.0")
+        msg = update_check.check_for_update("0.26.0")
+        assert msg and "0.27.0" in msg

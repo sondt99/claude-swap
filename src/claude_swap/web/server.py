@@ -166,6 +166,11 @@ def autoswitch_paused() -> bool:
 def set_autoswitch_paused(paused: bool) -> None:
     flag = paths.autoswitch_pause_file()
     if paused:
+        # The backup root is normally created by the switcher long before this,
+        # but the flag now lives inside it, so a dashboard started against a
+        # store that has not been written yet would otherwise raise
+        # FileNotFoundError out of the handler.
+        flag.parent.mkdir(parents=True, exist_ok=True)
         flag.touch(mode=0o600, exist_ok=True)
     else:
         flag.unlink(missing_ok=True)

@@ -16,17 +16,21 @@ CACHE_TTL = 24 * 3600  # 24 hours
 PYPI_URL = "https://pypi.org/pypi/claude-swap/json"
 
 
-def _parse_version(v: str) -> tuple[int, ...]:
-    """Numeric release segment only.
+def _parse_version(v: str) -> tuple:
+    """Compare-able key: (release numbers, 1 if a final release else 0).
 
     A PEP 440 local version (``0.26.0b1+web.1``, what a self-built fork
-    carries) or a pre-release suffix used to raise ValueError here. The caller
-    swallows that, so the effect was a permanently silent update notifier on
-    exactly the builds most likely to be behind. Compare the release segment
-    and ignore the rest.
+    carries) or a pre-release suffix used to raise ValueError here, and the
+    caller swallows that — so the builds most likely to be behind were the ones
+    permanently told nothing.
+
+    The trailing flag matters as much as the numbers: without it a pre-release
+    compares EQUAL to its own final, so someone on ``0.26.0b1`` would never be
+    told that ``0.26.0`` had shipped — the exact case this is meant to fix.
     """
     release = v.split("+", 1)[0]
     parts: list[int] = []
+    is_final = 1
     for chunk in release.split("."):
         digits = ""
         for ch in chunk:
@@ -36,9 +40,23 @@ def _parse_version(v: str) -> tuple[int, ...]:
         if not digits:
             break
         parts.append(int(digits))
+        if digits != chunk:
+            # A trailing non-digit is a pre/post-release marker (b1, rc1).
+            is_final = 0
+            break
     if not parts:
         raise ValueError(f"no numeric release segment in {v!r}")
-    return tuple(parts)
+    return (tuple(parts), is_final)
+
+
+def _is_prerelease(v: str) -> bool:
+    """True for a PyPI version no plain upgrade command would install.
+
+    ``uv tool upgrade`` and ``pipx upgrade`` both skip pre-releases without an
+    explicit opt-in, so announcing one produces a banner the user cannot act
+    on, re-shown every 24h forever.
+    """
+    return _parse_version(v)[1] == 0
 
 
 def _detect_install_method() -> str | None:
@@ -86,7 +104,14 @@ def check_for_update(current_version: str) -> str | None:
             # Write cache regardless of success/failure
             write_cache(CACHE_PATH, latest_version)
 
-        if latest_version and _parse_version(latest_version) > _parse_version(current_version):
+        # A pre-release on PyPI is skipped: neither `uv tool upgrade` nor
+        # `pipx upgrade` installs one without an explicit opt-in, so announcing
+        # it yields a banner the user cannot act on, repeated every 24h.
+        if (
+            latest_version
+            and not _is_prerelease(latest_version)
+            and _parse_version(latest_version) > _parse_version(current_version)
+        ):
             method = _detect_install_method()
             direct = {
                 "uv": "uv tool upgrade claude-swap",
