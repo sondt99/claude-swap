@@ -209,6 +209,9 @@
   .banner.show { display: block; }
   .banner b { font-weight: 650; }
   #health { border-color: var(--crit); background: color-mix(in srgb, var(--crit) 8%, transparent); color: color-mix(in srgb, var(--crit) 82%, var(--ink)); }
+  /* Stale-but-not-failing is a caution, not a fault: same banner, warning tone,
+     so a suspended laptop does not look like a broken deployment. */
+  #health.warn-only { border-color: var(--warn); background: color-mix(in srgb, var(--warn) 10%, transparent); color: color-mix(in srgb, var(--warn) 78%, var(--ink)); }
   #health .hint { display: block; margin-top: 6px; font-size: 12px; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; }
   #paused-note { border-color: var(--warn); background: color-mix(in srgb, var(--warn) 10%, transparent); color: color-mix(in srgb, var(--warn) 78%, var(--ink)); }
   button#pause.paused {
@@ -610,17 +613,39 @@ function renderPause(p) {
 // Usage fetches can fail silently for hours — the engine keeps switching on
 // last-good data, just increasingly late. Say so loudly, and name the check
 // that distinguishes a TLS-trust problem from a real network one.
+// `degraded` is set by EITHER of two unrelated conditions -- accounts whose
+// fetches are erroring, or data that is merely old -- and they need different
+// messages. Reporting the first for the second produced the self-contradictory
+// "Usage fetches are failing — 0 account(s)", and sent the reader off debugging
+// TLS when the real cause was a suspended laptop.
 function renderHealth(h) {
   const el = $("health");
   if (!h || !h.degraded) { el.classList.remove("show"); return; }
   const age = h.maxAgeSeconds != null ? ago(h.maxAgeSeconds) : "?";
-  el.innerHTML =
-    `<b>Usage fetches are failing</b> — ${esc(h.failingCount)} account(s), ` +
-    `oldest data ${esc(age)}${h.lastError ? ` · ${esc(h.lastError)}` : ""}. ` +
-    `The engine still switches, but on stale numbers, so it will be late.` +
-    `<span class="hint">docker exec cswap-auto /usr/local/bin/docker-entrypoint.sh python -c ` +
-    `"import urllib.request;urllib.request.urlopen('https://api.anthropic.com/v1/models',timeout=10)"` +
-    `\n→ HTTP 401 = TLS is fine (a real network fault) · CERTIFICATE_VERIFY_FAILED = missing CA bundle</span>`;
+  const failing = (h.failingCount || 0) > 0;
+
+  el.classList.toggle("warn-only", !failing);
+
+  if (failing) {
+    el.innerHTML =
+      `<b>Usage fetches are failing</b> — ${esc(h.failingCount)} account(s), ` +
+      `oldest data ${esc(age)}${h.lastError ? ` · ${esc(h.lastError)}` : ""}. ` +
+      `The engine still switches, but on stale numbers, so it will be late.` +
+      `<span class="hint">docker exec cswap-auto python -c ` +
+      `"import urllib.request;urllib.request.urlopen('https://api.anthropic.com/v1/models',timeout=10)"` +
+      `\n→ HTTP 401 = TLS is fine (a real network fault) · CERTIFICATE_VERIFY_FAILED = missing CA bundle</span>`;
+  } else {
+    // Nothing is erroring; the numbers are just old. Overwhelmingly this is a
+    // machine that was asleep or a stack that was stopped -- both self-heal on
+    // the next tick, so say that rather than implying a fault.
+    el.innerHTML =
+      `<b>Usage data is stale</b> — oldest reading ${esc(age)}, and no account ` +
+      `is reporting a fetch error. Usually means this machine was asleep or the ` +
+      `stack was stopped; it clears itself on the next successful poll. ` +
+      `Until then the engine decides on those older numbers.` +
+      `<span class="hint">docker logs --tail 5 cswap-auto` +
+      `\n→ ticks still arriving = recovering on its own · nothing new = the engine is not running</span>`;
+  }
   el.classList.add("show");
 }
 
