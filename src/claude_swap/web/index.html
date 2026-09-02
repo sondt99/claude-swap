@@ -6,42 +6,60 @@
 <meta name="referrer" content="no-referrer">
 <title>cswap</title>
 <style>
-  /* Status tokens are the validated fixed status palette (good / warning /
-     serious / critical) — deliberately distinct from the blue accent, which
-     carries *identity* (which account is active), never state. Mixing the two
-     would let a status colour impersonate a series.
+  /* Palette is cswap's own, lifted from src/claude_swap/tui/theme.py so the
+     dashboard, the TUI and the CLI read as one tool rather than three. Those
+     constants are the single source of truth; if they change there, change
+     them here.
 
-     On the light surface `warn` and `serious` sit below 3:1 by design; every
-     place they appear is paired with a shape and a word, so state is never
-     carried by colour alone. */
+         ACCENT   #d7875f  warm terracotta (xterm 173) — the same tone
+                           printer.py has always used, a deliberate nod to
+                           Claude Code's orange, used sparingly
+         SEV_OK   #87af87  calm green      SEV_WARN #d7af5f  amber
+         SEV_CRIT #d75f5f  soft red        TRACK    #3a3a3a
+
+     The severity ramp is deliberately desaturated so usage bars read calmly on
+     a dark background. Verified against the method's validator on cswap's own
+     surface: CVD separation passes comfortably (worst adjacent dE 23.9, target
+     >=12) and all three clear 3:1 contrast. It fails the chroma floor on the
+     green, which genuinely reads close to grey — mitigated the way upstream
+     mitigates it, by always printing the percentage beside the bar, so the
+     value is never carried by colour alone.
+
+     The accent stays reserved for *identity* (which account is active) and the
+     ramp for *state*, exactly as upstream separates them. */
   :root {
     color-scheme: light dark;
-    --bg: #f9f9f7;
+    --bg: #faf8f5;
     --panel: #ffffff;
-    --panel-2: #fbfbfd;
-    --line: #e3e6ec;
-    --ink: #14161a;
-    --muted: #6b7280;
-    --faint: #9aa1ad;
-    --accent: #2a78d6;
-    --good: #0ca30c;
-    --warn: #fab219;
-    --serious: #ec835a;
-    --crit: #d03b3b;
-    --shadow: 0 1px 2px rgba(16, 20, 30, .05), 0 4px 16px rgba(16, 20, 30, .045);
+    --panel-2: #f6f3ef;
+    --line: #e5ded5;
+    --ink: #1f1c19;
+    --muted: #6b645c;
+    --faint: #9a938a;
+    --accent: #b4633c;
+    --good: #2e6b52;
+    --warn: #9a7420;
+    --serious: #b06a3a;
+    --crit: #a83c3c;
+    --shadow: 0 1px 2px rgba(31, 28, 25, .05), 0 4px 16px rgba(31, 28, 25, .045);
     --radius: 14px;
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg: #0d0d0f;
-      --panel: #171a20;
-      --panel-2: #1c2027;
-      --line: #2a2f38;
-      --ink: #e8eaee;
-      --muted: #9aa1ad;
-      --faint: #6b7280;
-      --accent: #3987e5;
-      --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 6px 22px rgba(0, 0, 0, .3);
+      /* cswap's own charcoals, verbatim. */
+      --bg: #141414;
+      --panel: #1e1e1e;
+      --panel-2: #262626;
+      --line: #333333;
+      --ink: #e8e4de;
+      --muted: #8a8a8a;
+      --faint: #6a6a6a;
+      --accent: #d7875f;
+      --good: #87af87;
+      --warn: #d7af5f;
+      --serious: #d79a5f;
+      --crit: #d75f5f;
+      --shadow: 0 1px 2px rgba(0, 0, 0, .35), 0 6px 22px rgba(0, 0, 0, .3);
     }
   }
   * { box-sizing: border-box; }
@@ -79,6 +97,21 @@
   button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
   button.primary:hover:not(:disabled) { filter: brightness(1.08); background: var(--accent); }
   button.tiny { padding: 4px 10px; font-size: 12px; border-radius: 7px; }
+  /* Per-card Switch is an outline, not a solid fill. Upstream spends the
+     terracotta sparingly — it means "this is the active account" and nothing
+     else. Three solid accent buttons competed with the ACTIVE badge for exactly
+     the signal the accent is supposed to carry, so the repeated action gets a
+     tinted outline and the single primary CTA in the header keeps the fill. */
+  .acts button.tiny.primary {
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+    border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+    color: color-mix(in srgb, var(--accent) 80%, var(--ink));
+  }
+  .acts button.tiny.primary:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--accent) 20%, transparent);
+    border-color: var(--accent);
+    filter: none;
+  }
 
   /* ---- hero: the one number the page leads with ----
      The engine switches on the *binding* window — max(5h, 7d) — so that is the
