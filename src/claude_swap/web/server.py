@@ -28,6 +28,8 @@ import json
 import os
 import queue
 import secrets
+import select
+import socket
 import sys
 import threading
 import time
@@ -59,6 +61,9 @@ INDEX = HERE / "index.html"
 # nothing but a lock acquisition on most passes (see SnapshotSource docstring).
 POLL_INTERVAL_S = 10.0
 MAX_SSE_CLIENTS = 8
+# Also the ceiling on how long a departed client can hold a slot, since the
+# disconnect check runs once per wait.
+SSE_KEEPALIVE_S = 5.0
 
 # One year. The token URL is meant to be opened once ever; after that the
 # bookmark is the bare origin and the token is never seen again.
@@ -276,8 +281,19 @@ class Service:
 
     def subscribe(self) -> queue.Queue | None:
         with self._sub_lock:
-            if len(self._subscribers) >= MAX_SSE_CLIENTS:
-                return None
+            # Evict the oldest rather than refuse. Refreshing the page opens a
+            # new stream before the old one's handler has noticed the socket
+            # died, so a handful of refreshes used to exhaust the cap and the
+            # dashboard went dark for as long as the zombies lingered -- the
+            # page still loaded, it just never received data again. The oldest
+            # subscriber is overwhelmingly the one that was just abandoned.
+            while len(self._subscribers) >= MAX_SSE_CLIENTS:
+                victim = self._subscribers.pop(0)
+                # Wake its handler so it unblocks and tears down promptly.
+                try:
+                    victim.put_nowait(None)
+                except queue.Full:
+                    pass
             q: queue.Queue = queue.Queue(maxsize=4)
             self._subscribers.append(q)
             return q
@@ -662,17 +678,39 @@ class Handler(BaseHTTPRequestHandler):
         try:
             self._sse_write(self.service.latest())
             while True:
+                if self._client_gone():
+                    break
                 try:
-                    payload = q.get(timeout=20.0)
+                    payload = q.get(timeout=SSE_KEEPALIVE_S)
                 except queue.Empty:
                     self.wfile.write(b": keepalive\n\n")  # hold the connection open
                     self.wfile.flush()
                     continue
+                if payload is None:
+                    break  # evicted by a newer subscriber
                 self._sse_write(payload)
         except (BrokenPipeError, ConnectionResetError, OSError):
             pass
         finally:
             self.service.unsubscribe(q)
+
+    def _client_gone(self) -> bool:
+        """True once the peer has closed, without needing a write to fail.
+
+        A closed socket becomes readable and peeks as b"". Relying on a failed
+        write instead meant a departed client held its slot for two keepalive
+        periods, because the first write after a FIN lands in the kernel buffer
+        and only the second raises.
+        """
+        try:
+            ready, _, _ = select.select([self.connection], [], [], 0)
+            if not ready:
+                return False
+            return self.connection.recv(1, socket.MSG_PEEK | socket.MSG_DONTWAIT) == b""
+        except BlockingIOError:
+            return False
+        except OSError:
+            return True
 
     def _sse_write(self, payload: dict) -> None:
         self.wfile.write(f"data: {json.dumps(payload)}\n\n".encode())

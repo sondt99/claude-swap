@@ -501,3 +501,46 @@ class TestPauseFlagMode:
 
         web_server.set_autoswitch_paused(True)
         assert stat.S_IMODE(flag.stat().st_mode) == 0o600
+
+
+class TestSseSlotsSurviveRefreshes:
+    """Refreshing the page opens a new stream before the old one's handler has
+    noticed its socket died. Refusing at the cap meant a handful of refreshes
+    left the dashboard loading fine but never receiving data again."""
+
+    def test_subscribe_evicts_the_oldest_instead_of_refusing(self):
+        svc = web_server.Service.__new__(web_server.Service)
+        svc._subscribers = []
+        svc._sub_lock = threading.Lock()
+
+        first = svc.subscribe()
+        rest = [svc.subscribe() for _ in range(web_server.MAX_SSE_CLIENTS - 1)]
+        assert len(svc._subscribers) == web_server.MAX_SSE_CLIENTS
+
+        # One past the cap must still succeed -- this returned None before.
+        extra = svc.subscribe()
+        assert extra is not None
+        assert len(svc._subscribers) == web_server.MAX_SSE_CLIENTS
+        assert first not in svc._subscribers, "the oldest should have been evicted"
+        assert rest[-1] in svc._subscribers, "a recent subscriber must survive"
+
+    def test_an_evicted_subscriber_is_woken_so_its_handler_exits(self):
+        """Eviction must not leave the old handler blocked on an empty queue --
+        it has to unblock and run its unsubscribe/teardown."""
+        svc = web_server.Service.__new__(web_server.Service)
+        svc._subscribers = []
+        svc._sub_lock = threading.Lock()
+
+        victim = svc.subscribe()
+        for _ in range(web_server.MAX_SSE_CLIENTS):
+            svc.subscribe()
+        # The sentinel the SSE loop treats as "you were replaced".
+        assert victim.get_nowait() is None
+
+    def test_many_refreshes_never_exhaust_the_pool(self):
+        svc = web_server.Service.__new__(web_server.Service)
+        svc._subscribers = []
+        svc._sub_lock = threading.Lock()
+        for _ in range(MANY := web_server.MAX_SSE_CLIENTS * 4):
+            assert svc.subscribe() is not None
+        assert len(svc._subscribers) == web_server.MAX_SSE_CLIENTS
