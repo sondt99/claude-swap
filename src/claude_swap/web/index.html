@@ -97,6 +97,9 @@
   button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
   button.primary:hover:not(:disabled) { filter: brightness(1.08); background: var(--accent); }
   button.tiny { padding: 4px 10px; font-size: 12px; border-radius: 7px; }
+  /* Budget exhausted: dimmed, not disabled. Pressing it still explains why,
+     which is more use than a dead control. */
+  button.spent { opacity: .55; }
   /* Per-card Switch is an outline, not a solid fill. Upstream spends the
      terracotta sparingly — it means "this is the active account" and nothing
      else. Three solid accent buttons competed with the ACTIVE badge for exactly
@@ -282,7 +285,7 @@
     <h1>cswap</h1>
     <div class="spacer"></div>
     <button id="pause">Auto: —</button>
-    <button id="refresh" title="Fetch fresh usage now, ignoring the poll plans. Limited per hour: the org's request budget is nearly spent by the background cadence.">Refresh</button>
+    <button id="refresh" title="Fetch fresh usage now, ignoring the poll plans. Metered in requests/hour — a press that finds everything current is free.">Refresh</button>
     <button id="rotate">Rotate</button>
     <button id="avail">Next available</button>
     <button id="best" class="primary">Switch to best</button>
@@ -789,9 +792,21 @@ function paint(s) {
     ? `${acc.length} accounts · updated ${t.toLocaleTimeString()}` : "";
 }
 
+function renderRefreshBudget(remaining) {
+  // Shown on the button, not discovered by pressing it: a metered action whose
+  // limit is invisible until refused reads as a broken button, which is how
+  // this was first reported. Charged per request issued, so a press that finds
+  // everything current does not move this number.
+  const b = $("refresh");
+  if (remaining == null) { b.textContent = "Refresh"; return; }
+  b.textContent = `Refresh (${remaining})`;
+  b.classList.toggle("spent", remaining <= 0);
+}
+
 function render(s) {
   if (s.error) { toast(s.error, "err"); return; }
   lastSnap = s;
+  renderRefreshBudget(s.onDemandRemaining);
   // Number.isFinite, not typeof: `typeof null` is "object" but NaN/Infinity are
   // "number", and a non-finite threshold would poison every tick position.
   if (Number.isFinite(s.threshold) && s.threshold > 0 && Date.now() > thrHoldUntil) {

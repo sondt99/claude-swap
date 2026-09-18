@@ -45,6 +45,7 @@ from claude_swap import paths
 from claude_swap.exceptions import ClaudeSwitchError
 from claude_swap.json_output import usage_to_json
 from claude_swap.locking import FileLock
+from claude_swap import poll_policy
 from claude_swap.poll_policy import JITTER_FRAC
 from claude_swap.settings import load_settings, set_setting
 from claude_swap.switcher import ClaudeAccountSwitcher
@@ -63,19 +64,24 @@ INDEX = HERE / "index.html"
 POLL_INTERVAL_S = 10.0
 MAX_SSE_CLIENTS = 8
 
-# On-demand refreshes the org's request budget can absorb, per rolling hour.
+# On-demand refresh budget, in REQUESTS per rolling hour -- not presses.
 #
-# Deliberately small, and it is the active cadence that makes it so. With the
-# active row at poll_policy.SERVE_TTL_S the planned total is ~26 requests/hour
-# of a measured ~28-30 cap, which leaves about 2. A press costs less than it
-# looks -- a fetch rewrites the row's plan from now, so it mostly DISPLACES
-# the poll that was already scheduled -- but "less than it looks" is not
-# "free", and a held-down button or a second tab would be neither. Four is
-# roughly one full four-account refresh per hour.
+# Presses were the first unit and it was the wrong one. A press does not cost
+# four requests: the active row is always fresher than SERVE_TTL_S so a refresh
+# never refetches it, and a candidate is only eligible when its own data is
+# older than that. So a press while everything is current spends NOTHING, yet
+# charging per press billed it the same as a press that fetched three rows --
+# four such no-op presses exhausted the hour and the button then refused to
+# work while no request had been spent at all. Reported, correctly, as "why is
+# refresh only usable 4 times an hour".
 #
-# Widen this by slowing the active row: at ACTIVE_FAST_LANE_S of 300s the
-# planned total is ~24/hour and there is twice the room.
-ON_DEMAND_HOURLY_ALLOWANCE = 4
+# Charged per request actually issued, a press costs what it took and no more,
+# and pressing again when nothing is stale is free. The ceiling is what the
+# org's budget has left over the background cadence: at an active row of
+# SERVE_TTL_S the plan is ~26/hour of a measured ~28-30 cap, so this is
+# deliberately modest -- and it widens on its own if the active cadence is
+# relaxed, since the background then leaves more room.
+ON_DEMAND_HOURLY_REQUESTS = 8
 ON_DEMAND_WINDOW_S = 3600.0
 # Also the ceiling on how long a departed client can hold a slot, since the
 # disconnect check runs once per wait.
@@ -301,36 +307,69 @@ class Service:
     def refresh(self, full: bool = False) -> dict:
         with self._lock:
             snap = self.source.take(full=full)
+            remaining = self._on_demand_remaining(time.time())
         payload = snapshot_to_json(snap, self._threshold())
+        payload["onDemandRemaining"] = remaining
         self._latest = payload
         self._broadcast(payload)
         return payload
+
+    def _on_demand_remaining(self, now: float) -> int:
+        """Requests left in the rolling window. Rides on every snapshot so the
+        button can show it BEFORE it is pressed: discovering a limit by hitting
+        it makes a deliberate budget decision look like a broken button, which
+        is exactly how it was first reported."""
+        self._on_demand_at = [
+            t for t in self._on_demand_at if now - t < ON_DEMAND_WINDOW_S
+        ]
+        return max(0, ON_DEMAND_HOURLY_REQUESTS - len(self._on_demand_at))
+
+    def _fetched_at_by_account(self) -> dict[str, float | None]:
+        """Store-only read of every row's fetch time — no network at all, so
+        metering the refresh cannot itself cost a request."""
+        try:
+            entries = self.switcher.usage_entries_by_account(fetch=set())
+        except Exception:
+            return {}
+        return {num: entry.fetched_at for num, entry in entries.items()}
 
     def refresh_now(self) -> dict:
         """The dashboard's explicit refresh: fetch every row whose data is
         older than the store's serve TTL, ignoring its poll plan."""
         now = time.time()
         with self._lock:
-            self._on_demand_at = [
-                t for t in self._on_demand_at if now - t < ON_DEMAND_WINDOW_S
-            ]
-            spent = len(self._on_demand_at)
-            if spent >= ON_DEMAND_HOURLY_ALLOWANCE:
+            if self._on_demand_remaining(now) <= 0:
                 wait_s = ON_DEMAND_WINDOW_S - (now - self._on_demand_at[0])
                 return {
                     "ok": False,
                     "message": (
-                        f"Refresh limit reached ({ON_DEMAND_HOURLY_ALLOWANCE}/hour) "
-                        f"— the org's request budget is nearly spent by the "
-                        f"background cadence. Try again in {int(wait_s // 60) + 1} min."
+                        f"No refresh budget left this hour "
+                        f"({ON_DEMAND_HOURLY_REQUESTS} requests) — the background "
+                        f"cadence already spends most of the org's request "
+                        f"budget. Nothing is stuck: the numbers keep updating "
+                        f"on their own, the active account every "
+                        f"{int(poll_policy.SERVE_TTL_S // 60)} min. Next press "
+                        f"in {int(wait_s // 60) + 1} min."
                     ),
                     "output": "",
                     "payload": {"remaining": 0},
                 }
-            self._on_demand_at.append(now)
-            remaining = ON_DEMAND_HOURLY_ALLOWANCE - len(self._on_demand_at)
+            before = self._fetched_at_by_account()
             snap = self.source.take(full=True)
+            after = self._fetched_at_by_account()
+            # Charge for the requests this press actually issued: a row whose
+            # stored fetch time moved was fetched, one that did not was served
+            # from the store and cost nothing.
+            spent = sum(
+                1
+                for num, was in before.items()
+                if (now_at := after.get(num)) is not None
+                and (was is None or now_at > was)
+            )
+            self._on_demand_at.extend([now] * spent)
+            remaining = self._on_demand_remaining(now)
         payload = snapshot_to_json(snap, self._threshold())
+        payload["onDemandRemaining"] = remaining
         self._latest = payload
         self._broadcast(payload)
         # format_age answers None while a reading is fresher than SERVE_TTL_S,
@@ -344,9 +383,13 @@ class Service:
         )
         return {
             "ok": True,
-            "message": f"Refreshed — {state} ({remaining} left this hour)",
+            "message": (
+                f"Refreshed — {state}"
+                + (f", {spent} request{'s' if spent != 1 else ''} spent" if spent else ", free")
+                + f" ({remaining} left this hour)"
+            ),
             "output": "",
-            "payload": {"remaining": remaining},
+            "payload": {"remaining": remaining, "spent": spent},
         }
 
     def _threshold(self) -> float | None:

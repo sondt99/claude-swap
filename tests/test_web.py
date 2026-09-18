@@ -627,13 +627,19 @@ class TestOnDemandRefresh:
     """`/api/refresh` used to return {"ok": true, "message": "refreshed"} and
     do nothing at all, and no button called it -- so the dashboard's only
     freshness was whatever the background cadence had last written. At four
-    accounts in one org that is 30 minutes for a candidate row, which is what
-    "it updates really slowly" was.
+    accounts in one org that is 30 minutes for a candidate row.
+
+    The metering is charged per REQUEST ISSUED, not per press. Per-press was
+    the first unit and it was wrong: the active row is always fresher than
+    SERVE_TTL_S so a refresh never refetches it, and a press while everything
+    is current spends nothing -- yet four such no-op presses exhausted the hour
+    and the button then refused while no request had been spent at all.
     """
 
     class _Source:
-        def __init__(self):
+        def __init__(self, fetches=0):
             self.calls = []
+            self.fetches = fetches
 
         def take(self, *, full=False, store_only=False):
             self.calls.append({"full": full, "store_only": store_only})
@@ -641,7 +647,7 @@ class TestOnDemandRefresh:
                 "S", (), {"accounts": [], "active_number": None, "taken_at": 0.0}
             )()
 
-    def _service(self, monkeypatch):
+    def _service(self, monkeypatch, *, rows_fetched=0, row_count=4):
         svc = web_server.Service.__new__(web_server.Service)
         svc.source = self._Source()
         svc._lock = threading.Lock()
@@ -651,52 +657,78 @@ class TestOnDemandRefresh:
         svc._sub_lock = threading.Lock()
         monkeypatch.setattr(svc, "_threshold", lambda: 90.0, raising=False)
         monkeypatch.setattr(svc, "_broadcast", lambda payload: None, raising=False)
+        # Simulate the store: `rows_fetched` rows advance their fetch time.
+        state = {"n": 0}
+
+        def fetched_at_by_account():
+            state["n"] += 1
+            base = 100.0
+            return {
+                str(i): base + (state["n"] if i <= rows_fetched else 0)
+                for i in range(1, row_count + 1)
+            }
+
+        monkeypatch.setattr(
+            svc, "_fetched_at_by_account", fetched_at_by_account, raising=False
+        )
         return svc
 
     def test_it_actually_asks_for_a_full_pass(self, monkeypatch):
         svc = self._service(monkeypatch)
         result = svc.refresh_now()
         assert result["ok"] is True
-        assert svc.source.calls == [{"full": True, "store_only": False}]
+        assert {"full": True, "store_only": False} in svc.source.calls
 
-    def test_the_hourly_allowance_is_enforced(self, monkeypatch):
-        svc = self._service(monkeypatch)
-        for _ in range(web_server.ON_DEMAND_HOURLY_ALLOWANCE):
-            assert svc.refresh_now()["ok"] is True
+    def test_a_press_that_fetches_nothing_is_free(self, monkeypatch):
+        """The defect that made this look broken: no-op presses billed full
+        price and locked the button while spending no requests."""
+        svc = self._service(monkeypatch, rows_fetched=0)
+        for _ in range(20):
+            result = svc.refresh_now()
+            assert result["ok"] is True
+            assert result["payload"]["spent"] == 0
+        assert result["payload"]["remaining"] == web_server.ON_DEMAND_HOURLY_REQUESTS
+        assert ", free" in result["message"]
+
+    def test_a_press_is_charged_for_the_rows_it_fetched(self, monkeypatch):
+        svc = self._service(monkeypatch, rows_fetched=3)
+        result = svc.refresh_now()
+        assert result["payload"]["spent"] == 3
+        assert result["payload"]["remaining"] == (
+            web_server.ON_DEMAND_HOURLY_REQUESTS - 3
+        )
+        assert "3 requests spent" in result["message"]
+
+    def test_the_request_budget_is_enforced(self, monkeypatch):
+        svc = self._service(monkeypatch, rows_fetched=3)
+        while svc.refresh_now()["payload"]["remaining"] > 0:
+            pass
         refused = svc.refresh_now()
         assert refused["ok"] is False
         assert refused["payload"]["remaining"] == 0
         # The budget is the reason, so the message has to say so rather than
-        # looking like a fault.
+        # looking like a fault -- and it has to say the numbers are still
+        # moving, because a refusal on a dashboard reads as "stuck".
         assert "budget" in refused["message"]
-        # And no extra pass was taken.
-        assert len(svc.source.calls) == web_server.ON_DEMAND_HOURLY_ALLOWANCE
+        assert "Nothing is stuck" in refused["message"]
 
     def test_the_window_rolls_forward(self, monkeypatch):
-        svc = self._service(monkeypatch)
-        for _ in range(web_server.ON_DEMAND_HOURLY_ALLOWANCE):
-            svc.refresh_now()
+        svc = self._service(monkeypatch, rows_fetched=3)
+        while svc.refresh_now()["payload"]["remaining"] > 0:
+            pass
         assert svc.refresh_now()["ok"] is False
-        # Age every stamp past the window.
         svc._on_demand_at = [
             t - web_server.ON_DEMAND_WINDOW_S - 1.0 for t in svc._on_demand_at
         ]
         assert svc.refresh_now()["ok"] is True
 
-    def test_remaining_counts_down(self, monkeypatch):
-        svc = self._service(monkeypatch)
-        seen = [svc.refresh_now()["payload"]["remaining"] for _ in range(2)]
-        assert seen == [
-            web_server.ON_DEMAND_HOURLY_ALLOWANCE - 1,
-            web_server.ON_DEMAND_HOURLY_ALLOWANCE - 2,
-        ]
-
-    def test_the_button_exists_and_is_wired(self):
-        """The endpoint existing without a caller is how this was missed."""
-        page = (web_server.HERE / "index.html").read_text()
-        assert 'id="refresh"' in page
-        assert '$("refresh").onclick' in page
-        assert '"/api/refresh"' in page
+    def test_remaining_rides_on_every_snapshot(self, monkeypatch):
+        """So the button can show it before being pressed."""
+        svc = self._service(monkeypatch, rows_fetched=3)
+        svc.refresh_now()
+        assert svc.refresh()["onDemandRemaining"] == (
+            web_server.ON_DEMAND_HOURLY_REQUESTS - 3
+        )
 
     def test_the_message_never_interpolates_a_missing_age(self, monkeypatch):
         """format_age answers None while a reading is fresher than
@@ -706,3 +738,18 @@ class TestOnDemandRefresh:
         message = svc.refresh_now()["message"]
         assert "None" not in message
         assert "all readings current" in message
+
+    def test_the_button_exists_and_is_wired(self):
+        """The endpoint existing without a caller is how this was missed."""
+        page = (web_server.HERE / "index.html").read_text()
+        assert 'id="refresh"' in page
+        assert '$("refresh").onclick' in page
+        assert '"/api/refresh"' in page
+
+    def test_the_page_shows_the_budget_on_the_button(self):
+        """Discovering a limit by hitting it is what made a deliberate budget
+        decision look like a broken button."""
+        page = (web_server.HERE / "index.html").read_text()
+        assert "renderRefreshBudget" in page
+        assert "onDemandRemaining" in page
+        assert "button.spent" in page
