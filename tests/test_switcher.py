@@ -1838,8 +1838,11 @@ class TestListAccountsUsage:
         switcher._replan_new_active("1", "a@x.com", "org-shared")
 
         entry = store.entries(ident)["1"]
-        assert entry.poll_interval_s == poll_policy.scaled_min_interval_s(4)
-        assert entry.poll_interval_s == poll_policy.MIN_INTERVAL_S * 4
+        # The ACTIVE floor, not the even split: this row was just activated,
+        # and MIN_INTERVAL_S * 4 (720s) is the cadence that let an active row
+        # cross the whole escalation band unobserved on 2026-09-18.
+        assert entry.poll_interval_s == poll_policy.active_min_interval_s(4)
+        assert entry.poll_interval_s == poll_policy.ACTIVE_FAST_LANE_S
 
     def test_usage_budget_peers_counts_only_the_same_org(
         self, temp_home: Path, mock_claude_config: Path

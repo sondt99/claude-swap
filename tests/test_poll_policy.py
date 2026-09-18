@@ -328,11 +328,17 @@ class TestOrgBudgetIsDividedAmongPeers:
             assert active == poll_policy.MIN_INTERVAL_S
             assert candidate == poll_policy.CANDIDATE_DEFAULT_INTERVAL_S
 
-    def test_every_floor_and_ceiling_widens_by_the_peer_count(self):
+    def test_the_widening_is_per_role_not_per_account(self):
+        # Was `== MIN_INTERVAL_S * 4` for the active row. That even split is
+        # what let an active row cross the whole escalation band between two
+        # polls on 2026-09-18, so the active row now keeps a fast lane and the
+        # candidates absorb its share.
         _, active = _plan(is_active=True, peers=4)
-        assert active == poll_policy.MIN_INTERVAL_S * 4
+        assert active == poll_policy.ACTIVE_FAST_LANE_S
+        assert active < poll_policy.MIN_INTERVAL_S * 4
         _, candidate = _plan(is_active=False, peers=4)
-        assert candidate == poll_policy.CANDIDATE_DEFAULT_INTERVAL_S * 4
+        assert candidate > poll_policy.CANDIDATE_DEFAULT_INTERVAL_S * 4 - 1
+        assert candidate == poll_policy.POST_429_MAX_INTERVAL_S  # clamped
 
     def test_the_summed_rate_lands_under_the_measured_cap(self):
         # The property the constants exist to hold: whatever each account
@@ -361,7 +367,16 @@ class TestOrgBudgetIsDividedAmongPeers:
             new_usage=_usage(85.0),
             threshold=90.0,
         )
+        # Still priced on the EVEN split, deliberately. Pricing it on the
+        # active share instead gave 100s, which while armed is 44 requests/hour
+        # for the org -- past the measured cap, i.e. the 429 episode again.
         assert urgent == poll_policy.URGENT_INTERVAL_S * 4
+        # It only has to be faster than the row's normal cadence and quick
+        # enough to catch the reference burn inside the band.
+        _, normal = _plan(is_active=True, peers=4)
+        assert urgent < normal
+        burn_per_poll = poll_policy.REFERENCE_BURN_PCT_PER_MIN * (urgent / 60.0)
+        assert burn_per_poll < poll_policy.ESCALATION_MARGIN_PCT
 
     def test_no_scaled_interval_outlives_the_trust_it_is_read_under(self):
         # A planned interval wider than usage_store.TRUST_MAX_AGE_S would age
@@ -379,7 +394,15 @@ class TestOrgBudgetIsDividedAmongPeers:
         # autoswitch distinguishes "a leftover candidate plan" from a correct
         # active plan by width. At peers>1 a correct active plan is wider than
         # the bare constant, so the bare constant would misread every one.
-        _, active = _plan(is_active=True, peers=4, prev_interval_s=99_999.0)
+        # prev_usage supplied so the decay branch runs: without it the
+        # planner returns `default` and never consults the ceiling.
+        _, active = _plan(
+            is_active=True,
+            peers=4,
+            prev_interval_s=99_999.0,
+            prev_usage=_usage(10),
+            new_usage=_usage(10),
+        )
         assert active > poll_policy.ACTIVE_MAX_INTERVAL_S
         assert active <= poll_policy.active_ceiling_s(4)
 
@@ -403,12 +426,16 @@ class TestConsumersDoNotDriftFromTheCadence:
     # Every cadence a plan can legitimately carry, at each peer count.
     @staticmethod
     def _plannable(peers):
-        share = poll_policy.budget_share(peers)
+        cand = poll_policy.candidate_share(peers)
         return {
-            "min": poll_policy.scaled_min_interval_s(peers),
+            "active_min": poll_policy.active_min_interval_s(peers),
             "active_ceiling": poll_policy.active_ceiling_s(peers),
+            "candidate_min": min(
+                poll_policy.MIN_INTERVAL_S * cand,
+                poll_policy.POST_429_MAX_INTERVAL_S,
+            ),
             "candidate_ceiling": min(
-                poll_policy.CANDIDATE_MAX_INTERVAL_S * share,
+                poll_policy.CANDIDATE_MAX_INTERVAL_S * cand,
                 poll_policy.POST_429_MAX_INTERVAL_S,
             ),
             "post_429_ceiling": poll_policy.POST_429_MAX_INTERVAL_S,
@@ -447,3 +474,114 @@ class TestConsumersDoNotDriftFromTheCadence:
 
         assert web_server._is_behind_plan({"ageSeconds": 5000.0, "pollIntervalS": 300.0})
         assert stale_measurement(UsageEntry(age_s=5000.0, trust_extended=False))
+
+
+class TestTheActiveRowCannotCrossTheBandUnobserved:
+    """The 2026-09-18 miss, as a test.
+
+    Account 1 was active, held 0.24 %/min for an hour, then accelerated to
+    2.56 %/min and went 77% -> 100% of its 5h window. At the even split its
+    cadence was 720s, so the next look was 12 minutes away: it passed 82% (the
+    band edge), passed the 97% threshold and hit 100% with the engine still
+    reading 77%. Urgent mode never armed, because arming needs a poll to LAND
+    inside the band, and no poll did. The user was refused by Claude Code and
+    switched by hand; `autoswitch_state.json` still named a switch from four
+    days earlier.
+
+    The invariant that was missing: the active row's cadence must be short
+    enough that the band cannot be traversed between two polls.
+    """
+
+    MEASURED_BURN_PCT_PER_MIN = poll_policy.REFERENCE_BURN_PCT_PER_MIN
+    THRESHOLD = 97.0
+    # Where the request budget can still afford a cadence that covers the
+    # reference burn. Past this the fast lane runs out; see
+    # test_the_band_stops_covering_the_reference_burn_past_this_size.
+    COVERED_PEERS = [1, 2, 3, 4, 5]
+
+    @pytest.mark.parametrize("peers", COVERED_PEERS)
+    def test_the_band_is_wider_than_one_interval_of_the_measured_burn(self, peers):
+        interval_min = poll_policy.active_interval_s(peers) / 60.0
+        burned = self.MEASURED_BURN_PCT_PER_MIN * interval_min
+        assert burned < poll_policy.ESCALATION_MARGIN_PCT, (
+            f"peers={peers}: an active row burns {burned:.1f} points between "
+            f"polls but the band is only {poll_policy.ESCALATION_MARGIN_PCT} "
+            f"wide — it can cross the band unobserved and urgent mode will "
+            f"never arm, which is the 2026-09-18 miss"
+        )
+
+    @pytest.mark.parametrize("peers", COVERED_PEERS)
+    def test_band_coverage_is_stated_and_beats_the_measured_burn(self, peers):
+        assert poll_policy.band_covers_pct_per_min(peers) > (
+            self.MEASURED_BURN_PCT_PER_MIN
+        )
+
+    def test_the_band_stops_covering_the_reference_burn_past_this_size(self):
+        """The limit, recorded rather than hidden.
+
+        Beyond five accounts on one budget the candidates are already against
+        POST_429_MAX_INTERVAL_S, so the active row cannot keep its fast lane
+        without overspending, and the band cannot be widened to compensate
+        (escalation beats candidate plans -- see poll_policy). An org this
+        large gets late switches on a fast burn; that is a property of the
+        request budget, not a bug to fix here. If this assertion ever starts
+        failing, the budget or the endpoint's shape changed -- re-derive.
+        """
+        assert poll_policy.band_covers_pct_per_min(6) < (
+            self.MEASURED_BURN_PCT_PER_MIN
+        )
+        assert max(self.COVERED_PEERS) == 5
+
+    def test_the_even_split_fails_this_invariant(self):
+        """Not vacuous: the cadence this replaced does cross the band."""
+        even_interval_min = (poll_policy.MIN_INTERVAL_S * 4) / 60.0  # the old 720s
+        burned = self.MEASURED_BURN_PCT_PER_MIN * even_interval_min
+        assert burned > poll_policy.ESCALATION_MARGIN_PCT
+
+    def test_urgent_arms_on_the_poll_that_lands_in_the_band(self):
+        """And once armed it is fast enough to catch the rest of the climb."""
+        band_edge = self.THRESHOLD - poll_policy.ESCALATION_MARGIN_PCT
+        _, urgent = _plan(
+            is_active=True,
+            peers=4,
+            prev_interval_s=poll_policy.active_interval_s(4),
+            prev_usage=_usage(band_edge),
+            new_usage=_usage(band_edge + 2.0),
+            threshold=self.THRESHOLD,
+        )
+        climb = self.MEASURED_BURN_PCT_PER_MIN * (urgent / 60.0)
+        remaining = self.THRESHOLD - (band_edge + 2.0)
+        assert climb < remaining, (
+            f"urgent cadence {urgent}s burns {climb:.1f} points but only "
+            f"{remaining:.1f} remain to the threshold"
+        )
+
+
+class TestTheReallocationIsRateNeutral:
+    """Moving the budget must not spend more of it — the whole reason the even
+    split existed was a 429 episode that cost 18 hours of stale data."""
+
+    @pytest.mark.parametrize("peers", [1, 2, 3, 4])
+    def test_the_total_rate_is_unchanged_by_the_reallocation(self, peers):
+        def rate(active_s, candidate_s):
+            return 3600.0 / active_s + (peers - 1) * (3600.0 / candidate_s)
+
+        even = rate(*[poll_policy.MIN_INTERVAL_S * peers] * 2)
+        role = rate(
+            poll_policy.active_interval_s(peers),
+            poll_policy.candidate_interval_s(peers),
+        )
+        assert role <= even + 0.01, (
+            f"peers={peers}: the role split spends {role:.1f}/hour where the "
+            f"even split spent {even:.1f}/hour"
+        )
+
+    @pytest.mark.parametrize("peers", [1, 2, 3, 4, 6, 8, 12])
+    def test_the_summed_floor_rate_stays_under_the_measured_cap(self, peers):
+        """Every row at its FLOOR — the worst case, all of them moving."""
+        _, active = _plan(is_active=True, peers=peers, prev_usage=_usage(10),
+                          new_usage=_usage(30))
+        _, candidate = _plan(is_active=False, peers=peers, prev_usage=_usage(10),
+                             new_usage=_usage(30))
+        per_hour = 3600.0 / active + (peers - 1) * (3600.0 / candidate)
+        assert per_hour <= 28.0, f"peers={peers}: {per_hour:.1f} req/hour"

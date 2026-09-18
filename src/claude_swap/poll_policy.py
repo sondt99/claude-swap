@@ -130,19 +130,133 @@ CANDIDATE_MAX_INTERVAL_S = 600.0
 # (usage_store.TRUST_MAX_AGE_S, 3600s) purely from cadence, which would hand
 # the engine an unknown-usage account to fail over from.
 def budget_share(peers: int) -> float:
-    """Multiplier on every cadence floor/ceiling for ``peers`` accounts
-    sharing one request budget. ``1.0`` for a lone account."""
+    """How many accounts draw on one org's request budget. The raw divisor;
+    what each ROLE does with it is ``active_share``/``candidate_share``."""
     return float(max(1, peers))
+
+
+# THE BUDGET IS NOT SPLIT EVENLY, and this is the second thing measured about
+# it. Widening every cadence by ``budget_share`` spends the org's ~20
+# requests/hour evenly across its accounts, and that allocation missed a switch
+# on 2026-09-18: at four accounts every row planned 720s, and the ACTIVE row
+# burned its 5h window 77% -> 100% inside ONE of those intervals (2.56 %/min,
+# an 11x acceleration over the 0.24 %/min it had held for the previous hour).
+# The engine never observed a number above 77%, so it never armed urgent mode
+# and never reached its own 97% threshold; the user was refused by Claude Code
+# and switched by hand. An evenly-split budget buys freshness for rows that are
+# not moving, with the row that is.
+#
+# Only the ACTIVE row can burn quota minute to minute, and its number is what
+# arms autoswitch's Phase-B refetch of every candidate. Candidates therefore do
+# not need a continuous fast cadence — they need to be right at the moment a
+# switch is considered, which Phase B already guarantees by refetching them all
+# before deciding. So the active row gets a fast lane and the candidates absorb
+# the widening, at the SAME total request rate.
+ORG_TARGET_PER_HOUR = 20.0
+
+# The active row's cadence has a hard ceiling for a structural reason: urgent
+# mode arms only on a poll that LANDS inside the escalation band, so a row that
+# can cross the whole band between two polls can never be observed inside it.
+# The band is ESCALATION_MARGIN_PCT wide, so this cadence is what bounds the
+# burn rate the band can still catch — ``band_covers_pct_per_min`` states it,
+# and a test pins it. At 300s that is 3 %/min, above the 2.56 %/min measured in
+# the episode above.
+ACTIVE_FAST_LANE_S = 300.0
+
+
+def candidate_interval_s(peers: int) -> float:
+    """Cadence floor for a CANDIDATE row: the org target minus the active
+    row's fast lane, divided by the candidates, and never wider than the
+    module's widest intended cadence.
+
+    Solved from the target rather than tuned, so the reallocation is
+    rate-neutral: at four accounts the active row takes 3600/300 = 12/hour and
+    the three candidates share the remaining 8/hour at 1350s each, the same
+    20/hour the even split spent.
+    """
+    n = max(1, peers)
+    if n <= 1:
+        return MIN_INTERVAL_S
+    left = ORG_TARGET_PER_HOUR - 3600.0 / ACTIVE_FAST_LANE_S
+    if left <= 0:
+        return POST_429_MAX_INTERVAL_S
+    return min((n - 1) * 3600.0 / left, POST_429_MAX_INTERVAL_S)
+
+
+def active_interval_s(peers: int) -> float:
+    """Cadence floor for the ACTIVE row: the fast lane, but only what is left
+    after the candidates are paid for.
+
+    The fast lane is not unconditional, and a test pins why. Candidates cannot
+    widen past ``POST_429_MAX_INTERVAL_S`` (a wider plan would age the row into
+    "unknown" — see ``_scaled``), so beyond a certain peer count they fill the
+    target on their own. Granting the active row a fast lane on top of that
+    spends more than the even split did: at twelve accounts it measured 34
+    requests/hour against a ~28-30 cap, i.e. it would have re-created the very
+    429 episode the org split was written to end. Where there is no room, the
+    active row falls back to the even split, and the band cannot be widened to
+    compensate — see the comment below ``active_interval_s`` for why.
+    """
+    n = max(1, peers)
+    fast = min(MIN_INTERVAL_S * budget_share(n), ACTIVE_FAST_LANE_S)
+    if n <= 1:
+        return fast
+    candidate_rate = (n - 1) * 3600.0 / candidate_interval_s(n)
+    left = ORG_TARGET_PER_HOUR - candidate_rate
+    if left <= 0:
+        return _scaled(MIN_INTERVAL_S, budget_share(n))
+    return max(fast, 3600.0 / left)
+
+
+# Why the band is NOT widened to compensate where the fast lane runs out.
+# Looking earlier is the obvious second lever, and it is a trap here:
+# autoswitch's Phase-B escalation deliberately beats candidate plans, and
+# ``usage_store._row_eligible`` then admits a fetch whenever a row is older
+# than SERVE_TTL_S. So every extra minute spent inside the band costs each
+# candidate a 180s cadence — at four accounts about 75 requests/hour against a
+# ~28-30 cap. Widening the band buys earlier warning by re-creating the 429
+# episode the org split was written to end. The fast lane is the affordable
+# lever; where even that runs out (see ``active_interval_s``), the honest
+# answer is that this many accounts on one budget cannot be watched closely,
+# and a test records where that starts.
+REFERENCE_BURN_PCT_PER_MIN = 2.56
+
+
+def band_covers_pct_per_min(peers: int) -> float:
+    """The fastest burn the escalation band still catches at this peer count:
+    a row moving faster crosses the band between two polls and urgent mode
+    never arms, which is the 2026-09-18 miss. Watch this against the real
+    burn rates in the log."""
+    return ESCALATION_MARGIN_PCT / (active_interval_s(peers) / 60.0)
+
+
+def active_share(peers: int) -> float:
+    """``active_interval_s`` as a multiplier on the unscaled constants."""
+    return active_interval_s(peers) / MIN_INTERVAL_S
+
+
+def candidate_share(peers: int) -> float:
+    """``candidate_interval_s`` as a multiplier on the unscaled constants."""
+    return candidate_interval_s(peers) / MIN_INTERVAL_S
+
+
+def role_share(peers: int, *, is_active: bool) -> float:
+    return active_share(peers) if is_active else candidate_share(peers)
 
 
 def _scaled(interval_s: float, share: float) -> float:
     return min(interval_s * share, POST_429_MAX_INTERVAL_S)
 
 
-def scaled_min_interval_s(peers: int) -> float:
-    """The cadence floor at this peer count — what any caller writing a plan
-    outside ``plan_after_fetch`` must use instead of ``MIN_INTERVAL_S``."""
-    return _scaled(MIN_INTERVAL_S, budget_share(peers))
+def active_min_interval_s(peers: int) -> float:
+    """The ACTIVE row's cadence floor — what a caller writing an active plan
+    outside ``plan_after_fetch`` must use instead of ``MIN_INTERVAL_S``.
+
+    Was ``scaled_min_interval_s``, which answered the same question for every
+    role. Its one consumer replans the row that a switch just made active, so
+    a role-blind answer put the new active row on the candidate cadence.
+    """
+    return _scaled(MIN_INTERVAL_S, active_share(peers))
 
 
 def active_ceiling_s(peers: int) -> float:
@@ -150,7 +264,7 @@ def active_ceiling_s(peers: int) -> float:
     count. Consumers that test a persisted plan for "too slow to be an active
     plan" must use this, not ``ACTIVE_MAX_INTERVAL_S`` — at peers>1 a correct
     active plan is legitimately wider than the unscaled constant."""
-    return _scaled(ACTIVE_MAX_INTERVAL_S, budget_share(peers))
+    return _scaled(ACTIVE_MAX_INTERVAL_S, active_share(peers))
 
 
 # Exhaustion is stable enough to poll slowly, but not to stop polling until a
@@ -280,13 +394,22 @@ def plan_after_fetch(
     quota grant is observed and its decision-grade status stays current.
 
     ``peers`` is how many accounts share this one's request budget (see "ONE
-    BUDGET, N ACCOUNTS" in the module docstring); every floor and ceiling
-    below is widened by it, so the ~20 requests/hour target is the ORG's, not
-    each account's. ``peers=1`` reproduces the unscaled behaviour exactly.
+    BUDGET, N ACCOUNTS" in the module docstring), so the ~20 requests/hour
+    target is the ORG's, not each account's. The widening is per ROLE, not per
+    account: the active row keeps a fast lane and the candidates absorb the
+    rest at the same total rate ("THE BUDGET IS NOT SPLIT EVENLY").
+    ``peers=1`` reproduces the unscaled behaviour exactly.
     """
-    share = budget_share(peers)
+    # Per ROLE, not per account: see "THE BUDGET IS NOT SPLIT EVENLY" above.
+    share = role_share(peers, is_active=is_active)
     min_interval = _scaled(MIN_INTERVAL_S, share)
-    urgent_interval = _scaled(URGENT_INTERVAL_S, share)
+    # Urgent mode keeps the EVEN-split price, deliberately. Pricing it on the
+    # active share gave 100s at four accounts, which while armed is 36
+    # requests/hour for this row alone — 44 with the candidates, past the
+    # measured cap. At the even split it is 240s, which still catches
+    # REFERENCE_BURN_PCT_PER_MIN inside the band with room to spare
+    # (a test pins that) and totals 23/hour while armed.
+    urgent_interval = _scaled(URGENT_INTERVAL_S, budget_share(peers))
     default = _scaled(
         MIN_INTERVAL_S if is_active else CANDIDATE_DEFAULT_INTERVAL_S, share
     )

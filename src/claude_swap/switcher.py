@@ -5264,12 +5264,14 @@ class ClaudeAccountSwitcher:
             entry = self._usage_store.entries(identities).get(number)
             if entry is None or entry.fetched_at is None:
                 return
-            # The floor is the ORG's, divided by the accounts sharing it — the
-            # same scaling `plan_after_fetch` applies. Writing the bare
+            # The floor is the ORG's, shared with the accounts drawing on it —
+            # the same scaling `plan_after_fetch` applies. Writing the bare
             # constant here would reset a correctly-widened plan to 180s on
             # every switch, which on a 4-account org is the whole budget spent
-            # by one slot.
-            floor = poll_policy.scaled_min_interval_s(
+            # by one slot. The ACTIVE floor specifically: this row is the one
+            # the switch just activated, and the active fast lane is what lets
+            # the escalation band still catch it burning.
+            floor = poll_policy.active_min_interval_s(
                 self.usage_budget_peers(org_uuid or "")
             )
             next_poll = max(now, entry.fetched_at + floor)
