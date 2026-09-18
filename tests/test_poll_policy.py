@@ -371,11 +371,15 @@ class TestOrgBudgetIsDividedAmongPeers:
         # active share instead gave 100s, which while armed is 44 requests/hour
         # for the org -- past the measured cap, i.e. the 429 episode again.
         assert urgent == poll_policy.URGENT_INTERVAL_S * 4
-        # It only has to be faster than the row's normal cadence and quick
-        # enough to catch the reference burn inside the band.
+        # And the consequence of the active row sitting at SERVE_TTL_S: urgent
+        # mode is now SLOWER than the normal plan, so it is no longer what
+        # saves a fast burn -- the floor is. Left in place because it still
+        # binds at peer counts where the fast lane has run out, and because a
+        # plan is never widened past its own ceiling anyway.
         _, normal = _plan(is_active=True, peers=4)
-        assert urgent < normal
-        burn_per_poll = poll_policy.REFERENCE_BURN_PCT_PER_MIN * (urgent / 60.0)
+        assert urgent > normal
+        assert normal == poll_policy.SERVE_TTL_S
+        burn_per_poll = poll_policy.REFERENCE_BURN_PCT_PER_MIN * (normal / 60.0)
         assert burn_per_poll < poll_policy.ESCALATION_MARGIN_PCT
 
     def test_no_scaled_interval_outlives_the_trust_it_is_read_under(self):
@@ -403,8 +407,15 @@ class TestOrgBudgetIsDividedAmongPeers:
             prev_usage=_usage(10),
             new_usage=_usage(10),
         )
-        assert active > poll_policy.ACTIVE_MAX_INTERVAL_S
+        # At four accounts the fast lane pins the active share to 1.0, so the
+        # ceiling now EQUALS the unscaled constant. What the consumer needs is
+        # unchanged: the ceiling still separates a correct active plan from a
+        # leftover candidate one, which is the distinction autoswitch draws.
         assert active <= poll_policy.active_ceiling_s(4)
+        assert poll_policy.active_ceiling_s(4) == poll_policy.ACTIVE_MAX_INTERVAL_S
+        assert poll_policy.candidate_interval_s(4) > poll_policy.active_ceiling_s(4)
+        # Past the fast lane it widens again, which is why the helper exists.
+        assert poll_policy.active_ceiling_s(12) > poll_policy.ACTIVE_MAX_INTERVAL_S
 
 
 class TestConsumersDoNotDriftFromTheCadence:
@@ -497,7 +508,7 @@ class TestTheActiveRowCannotCrossTheBandUnobserved:
     # Where the request budget can still afford a cadence that covers the
     # reference burn. Past this the fast lane runs out; see
     # test_the_band_stops_covering_the_reference_burn_past_this_size.
-    COVERED_PEERS = [1, 2, 3, 4, 5]
+    COVERED_PEERS = [1, 2, 3, 4, 5, 6, 7, 8]
 
     @pytest.mark.parametrize("peers", COVERED_PEERS)
     def test_the_band_is_wider_than_one_interval_of_the_measured_burn(self, peers):
@@ -519,7 +530,7 @@ class TestTheActiveRowCannotCrossTheBandUnobserved:
     def test_the_band_stops_covering_the_reference_burn_past_this_size(self):
         """The limit, recorded rather than hidden.
 
-        Beyond five accounts on one budget the candidates are already against
+        Beyond eight accounts on one budget the candidates are already against
         POST_429_MAX_INTERVAL_S, so the active row cannot keep its fast lane
         without overspending, and the band cannot be widened to compensate
         (escalation beats candidate plans -- see poll_policy). An org this
@@ -527,10 +538,10 @@ class TestTheActiveRowCannotCrossTheBandUnobserved:
         request budget, not a bug to fix here. If this assertion ever starts
         failing, the budget or the endpoint's shape changed -- re-derive.
         """
-        assert poll_policy.band_covers_pct_per_min(6) < (
+        assert poll_policy.band_covers_pct_per_min(9) < (
             self.MEASURED_BURN_PCT_PER_MIN
         )
-        assert max(self.COVERED_PEERS) == 5
+        assert max(self.COVERED_PEERS) == 8
 
     def test_the_even_split_fails_this_invariant(self):
         """Not vacuous: the cadence this replaced does cross the band."""
@@ -557,24 +568,37 @@ class TestTheActiveRowCannotCrossTheBandUnobserved:
         )
 
 
-class TestTheReallocationIsRateNeutral:
-    """Moving the budget must not spend more of it — the whole reason the even
-    split existed was a 429 episode that cost 18 hours of stale data."""
+class TestTheBudgetStaysInsideWhatWasMeasured:
+    """The rate is a deliberate, documented number — not "whatever comes out".
 
-    @pytest.mark.parametrize("peers", [1, 2, 3, 4])
-    def test_the_total_rate_is_unchanged_by_the_reallocation(self, peers):
-        def rate(active_s, candidate_s):
-            return 3600.0 / active_s + (peers - 1) * (3600.0 / candidate_s)
+    It is NOT rate-neutral against the even split any more: the operator chose
+    to spend reserve for a 3-minute active cadence (2026-09-18). What must hold
+    is the measured evidence in poll_policy's own docstring: three accounts ran
+    a month at 27/hour with zero 429s, and the episode that broke was 33/hour.
+    So the planned total must stay below the figure proven clean, not merely
+    below the cap.
+    """
 
-        even = rate(*[poll_policy.MIN_INTERVAL_S * peers] * 2)
-        role = rate(
-            poll_policy.active_interval_s(peers),
-            poll_policy.candidate_interval_s(peers),
+    PROVEN_CLEAN_PER_HOUR = 27.0
+    OBSERVED_FAILURE_PER_HOUR = 33.0
+
+    @pytest.mark.parametrize("peers", [1, 2, 3, 4, 5, 8, 12])
+    def test_the_planned_total_stays_below_the_rate_proven_clean(self, peers):
+        rate = 3600.0 / poll_policy.active_interval_s(peers) + (peers - 1) * (
+            3600.0 / poll_policy.candidate_interval_s(peers)
         )
-        assert role <= even + 0.01, (
-            f"peers={peers}: the role split spends {role:.1f}/hour where the "
-            f"even split spent {even:.1f}/hour"
+        assert rate < self.PROVEN_CLEAN_PER_HOUR, (
+            f"peers={peers}: {rate:.1f} req/hour, and only {self.PROVEN_CLEAN_PER_HOUR} "
+            f"has been observed to run clean for a month "
+            f"({self.OBSERVED_FAILURE_PER_HOUR} is where 429s started)"
         )
+
+    def test_the_active_row_gets_the_fastest_cadence_the_store_permits(self):
+        """What the operator actually asked for, and why 2 minutes was refused:
+        SERVE_TTL_S is the floor — anything fresher is served from the store
+        without a request, so no setting can poll faster than this."""
+        assert poll_policy.active_interval_s(4) == poll_policy.SERVE_TTL_S
+        assert poll_policy.ACTIVE_FAST_LANE_S == poll_policy.SERVE_TTL_S
 
     @pytest.mark.parametrize("peers", [1, 2, 3, 4, 6, 8, 12])
     def test_the_summed_floor_rate_stays_under_the_measured_cap(self, peers):

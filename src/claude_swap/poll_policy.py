@@ -152,16 +152,45 @@ def budget_share(peers: int) -> float:
 # switch is considered, which Phase B already guarantees by refetching them all
 # before deciding. So the active row gets a fast lane and the candidates absorb
 # the widening, at the SAME total request rate.
-ORG_TARGET_PER_HOUR = 20.0
+# Raised from 20 to 26 deliberately, and it spends reserve. The 20 figure left
+# ~8-10 requests/hour of the measured ~28-30 cap for manual commands,
+# wake-from-sleep catch-up and urgent mode. The operator asked (2026-09-18,
+# after the missed switch) for the shortest quota check the system can give,
+# and 26 is what puts the ACTIVE row at exactly SERVE_TTL_S: 3600/(26 - 6),
+# where 6 is three candidates against the POST_429_MAX_INTERVAL_S clamp.
+#
+# 26 is not a guess against the cap. This module's own measurements: three
+# accounts ran a MONTH at 27/hour with zero 429s, and the episode that broke
+# was 33/hour. 26 sits below the figure that is proven clean and well under the
+# one that failed. What it does cost is reserve — about 2/hour — so urgent mode
+# and manual commands have little room. Urgent mode does not need any here:
+# at an active plan of SERVE_TTL_S it is already slower than the normal
+# cadence. Phase-B escalation still overspends while the band is armed, which
+# is pre-existing and bounded by how long the row stays in the band.
+#
+# Lower it to 24 for candidates at 15 min and 4/hour of reserve, or to 20 for
+# the original ~8-10; nothing else needs to change.
+ORG_TARGET_PER_HOUR = 26.0
 
 # The active row's cadence has a hard ceiling for a structural reason: urgent
 # mode arms only on a poll that LANDS inside the escalation band, so a row that
 # can cross the whole band between two polls can never be observed inside it.
 # The band is ESCALATION_MARGIN_PCT wide, so this cadence is what bounds the
 # burn rate the band can still catch — ``band_covers_pct_per_min`` states it,
-# and a test pins it. At 300s that is 3 %/min, above the 2.56 %/min measured in
-# the episode above.
-ACTIVE_FAST_LANE_S = 300.0
+# and a test pins it.
+#
+# Set to SERVE_TTL_S, the fastest any single account may be polled at all: the
+# operator asked for the shortest quota check the system can give the row that
+# is actually burning (2026-09-18). 180s covers 5 %/min, nearly double the
+# 2.56 %/min that caused the missed switch, and it is a floor rather than a
+# choice — the store serves anything fresher from cache without a request, so
+# no setting can go below it. A consequence worth knowing: at this cadence
+# URGENT_INTERVAL_S (240s at four peers) is *slower* than the normal plan, so
+# urgent mode stops being the thing that saves a fast burn — the floor is.
+# 300s was the previous value and remains the right one if the reserve matters
+# more than the active row's freshness; it puts candidates at 15 min instead
+# of 30.
+ACTIVE_FAST_LANE_S = SERVE_TTL_S
 
 
 def candidate_interval_s(peers: int) -> float:
