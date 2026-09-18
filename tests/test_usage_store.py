@@ -14,6 +14,7 @@ from claude_swap.usage_store import (
     RATE_LIMIT_TRUST_MAX_AGE_S,
     SERVE_TTL_S,
     STALE_OK_S,
+    THROTTLE_BACKOFF_CAP_S,
     TRUST_MAX_AGE_S,
     FetchRecord,
     UsageEntry,
@@ -1682,3 +1683,92 @@ class TestStruckFingerprintHygiene:
         )
         store.clear_dead_token(["1"], ident)
         assert store.entries(ident)["1"].struck_fingerprint is None
+
+
+ORG_IDENT = {str(n): (f"u{n}@x.com", "org-shared") for n in range(1, 5)}
+
+
+class TestAThrottleIsNotAFault:
+    """http-403 is the usage endpoint shedding load, same as http-429.
+
+    Measured 2026-09-18: zero 403s in a month on a 3-account org; ~18h after a
+    4th account joined, 403s hit all four, interleaved with 429s, and a token
+    that had just drawn 403s returned 200 the instant its sibling 429 block
+    lapsed. Routed as a generic fault it re-probed on the 600s curve — three
+    accounts doing that is 18 requests/hour that alone held the org at its cap
+    for 18 hours."""
+
+    def test_a_403_retries_on_the_throttle_curve_not_the_fault_curve(self):
+        fault = usage_store._failure_backoff_s(50, None, rate_limited=False)
+        throttle = usage_store._failure_backoff_s(
+            50, None, rate_limited=True, share=4.0
+        )
+        assert fault == BACKOFF_CAP_S
+        assert throttle > fault
+
+    def test_a_fault_is_never_widened_by_the_peer_count(self):
+        # A timeout costs the budget nothing to retry and the user wants it
+        # back quickly; only a shed request pays for its own probes.
+        assert (
+            usage_store._failure_backoff_s(50, None, rate_limited=False, share=8.0)
+            == BACKOFF_CAP_S
+        )
+
+    def test_the_throttle_curve_never_outlives_its_own_trust(self):
+        # Parked longer than last_good stays trusted = un-pollable AND unknown
+        # at once, which autoswitch reads as failover pressure.
+        for share in (1.0, 4.0, 50.0):
+            wait = usage_store._failure_backoff_s(
+                999, None, rate_limited=True, share=share
+            )
+            assert wait < TRUST_MAX_AGE_S
+
+    def test_403_is_recorded_as_a_throttle_and_earns_the_stale_trust(
+        self, store, clock
+    ):
+        store.record({"1": FetchRecord(usage=USAGE)}, ORG_IDENT)
+        clock.advance(10)
+        store.record({"1": FetchRecord(error="http-403")}, ORG_IDENT)
+        entry = store.entries(ORG_IDENT)["1"]
+        # The planner's post-throttle floor keys on this field.
+        assert entry.last_429_at == pytest.approx(clock.now)
+        assert entry.recent_429(clock.now)
+        # And the frozen measurement stays decision-grade, exactly as a 429's
+        # does: a throttle does not move the account's real windows.
+        assert entry.decision_value() is not None
+
+    def _park(self, tmp, clock, identities, rounds=9):
+        st = UsageStore(tmp, clock=clock)
+        for _ in range(rounds):
+            st.record({"1": FetchRecord(error="http-403")}, identities)
+        return st.entries(identities)["1"].backoff_until - clock.now
+
+    def test_the_park_is_divided_among_the_accounts_sharing_the_budget(
+        self, tmp_path, clock
+    ):
+        lone = {"1": ("a@x.com", "")}  # no org recorded → its own group
+        pair = {n: (f"u{n}@x.com", "org-pair") for n in ("1", "2")}
+        assert self._park(tmp_path / "a", clock, lone) == BACKOFF_CAP_S
+        assert self._park(tmp_path / "b", clock, pair) == pytest.approx(
+            BACKOFF_CAP_S * 2
+        )
+
+    def test_a_large_org_is_clamped_rather_than_parked_out_of_its_trust(
+        self, tmp_path, clock
+    ):
+        # Division alone would put a 4-account org at 2400s and a 12-account
+        # one at 7200s — past the trust window, i.e. blind. The clamp binds
+        # first, and the divisor never reaches past it.
+        assert self._park(tmp_path / "c", clock, ORG_IDENT) == THROTTLE_BACKOFF_CAP_S
+        assert THROTTLE_BACKOFF_CAP_S < TRUST_MAX_AGE_S
+
+    def test_the_peer_divisor_survives_a_single_slot_caller(self, store, clock):
+        # `cswap --status 1` passes one identity. Sizing the backoff as if the
+        # slot were alone is the under-division that kept the budget saturated,
+        # so the stored rows are unioned in.
+        pair = {n: (f"u{n}@x.com", "org-pair") for n in ("1", "2")}
+        store.record({"2": FetchRecord(usage=USAGE)}, pair)  # the peer's row
+        for _ in range(9):
+            store.record({"1": FetchRecord(error="http-403")}, {"1": pair["1"]})
+        wait = store.entries(pair)["1"].backoff_until - clock.now
+        assert wait == pytest.approx(BACKOFF_CAP_S * 2)

@@ -313,3 +313,72 @@ class TestBudgetInvariants:
         # (which absorbs any overshoot) is considered.
         polls = poll_policy.ESCALATION_MARGIN_PCT / poll_policy.MOVEMENT_DELTA_PCT
         assert polls < 27
+
+
+class TestOrgBudgetIsDividedAmongPeers:
+    """N accounts in one organization draw on ONE request budget, so each
+    one's cadence is the org's budget divided by them. Regression cover for
+    the 18-hour outage of 2026-09-18: four accounts each planning their own
+    ~20 requests/hour put ~33/hour on a ~28-30/hour cap and never recovered."""
+
+    def test_a_lone_account_is_unscaled(self):
+        for peers in (0, 1):  # 0 is a caller that could not count; never < 1x
+            _, active = _plan(is_active=True, peers=peers)
+            _, candidate = _plan(is_active=False, peers=peers)
+            assert active == poll_policy.MIN_INTERVAL_S
+            assert candidate == poll_policy.CANDIDATE_DEFAULT_INTERVAL_S
+
+    def test_every_floor_and_ceiling_widens_by_the_peer_count(self):
+        _, active = _plan(is_active=True, peers=4)
+        assert active == poll_policy.MIN_INTERVAL_S * 4
+        _, candidate = _plan(is_active=False, peers=4)
+        assert candidate == poll_policy.CANDIDATE_DEFAULT_INTERVAL_S * 4
+
+    def test_the_summed_rate_lands_under_the_measured_cap(self):
+        # The property the constants exist to hold: whatever each account
+        # plans, the ORG's total must fit the ~28-30 requests/hour the
+        # endpoint was measured to allow.
+        peers = 4
+        _, active = _plan(is_active=True, peers=peers)
+        _, candidate = _plan(is_active=False, peers=peers)
+        per_hour = 3600.0 / active + (peers - 1) * (3600.0 / candidate)
+        assert per_hour <= 28.0
+        # ...and the unscaled planner is what broke it, so the test is not
+        # vacuously satisfied by any interval at all.
+        _, un_active = _plan(is_active=True, peers=1)
+        _, un_candidate = _plan(is_active=False, peers=1)
+        assert 3600.0 / un_active + (peers - 1) * (3600.0 / un_candidate) > 28.0
+
+    def test_urgent_mode_is_divided_too(self):
+        # Urgent mode is bounded "by construction" only against a budget it
+        # has room in; at peers>1 the steady traffic already fills the org's
+        # share, so the burst has to scale with everything else.
+        _, urgent = _plan(
+            is_active=True,
+            peers=4,
+            prev_interval_s=poll_policy.MIN_INTERVAL_S * 4,
+            prev_usage=_usage(80.0),
+            new_usage=_usage(85.0),
+            threshold=90.0,
+        )
+        assert urgent == poll_policy.URGENT_INTERVAL_S * 4
+
+    def test_no_scaled_interval_outlives_the_trust_it_is_read_under(self):
+        # A planned interval wider than usage_store.TRUST_MAX_AGE_S would age
+        # the row into "unknown" purely from cadence, which autoswitch reads as
+        # failover pressure. The clamp is what forbids it at any peer count.
+        from claude_swap import usage_store
+
+        for peers in (1, 4, 12, 500):
+            for is_active in (True, False):
+                _, interval = _plan(is_active=is_active, peers=peers)
+                assert interval <= poll_policy.POST_429_MAX_INTERVAL_S
+                assert interval < usage_store.TRUST_MAX_AGE_S
+
+    def test_active_ceiling_s_is_what_consumers_must_test_against(self):
+        # autoswitch distinguishes "a leftover candidate plan" from a correct
+        # active plan by width. At peers>1 a correct active plan is wider than
+        # the bare constant, so the bare constant would misread every one.
+        _, active = _plan(is_active=True, peers=4, prev_interval_s=99_999.0)
+        assert active > poll_policy.ACTIVE_MAX_INTERVAL_S
+        assert active <= poll_policy.active_ceiling_s(4)

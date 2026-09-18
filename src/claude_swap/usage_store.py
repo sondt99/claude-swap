@@ -111,6 +111,30 @@ RATE_LIMIT_TRUST_MAX_AGE_S = 7200.0
 # Failure backoff when the server sent no Retry-After: 30s · 2^(n-1), capped.
 BACKOFF_BASE_S = 30.0
 BACKOFF_CAP_S = 600.0
+
+# Responses the usage endpoint uses to SHED LOAD, as opposed to a fault. 429 is
+# the documented one. 403 was measured into this set 2026-09-18: over a month
+# of logs on a 3-account org there was not one http-403; ~18h after a 4th
+# account joined (33 req/hour against the ~28-30 cap — see poll_policy's "ONE
+# BUDGET, N ACCOUNTS") 403s appeared for ALL FOUR accounts, interleaved with
+# 429s in the same minutes, and the same token+UA that had just drawn 403s
+# returned 200 the instant its sibling 429 block lapsed. A permission error
+# does none of that. Cloudflare fronts this endpoint and answers over-budget
+# traffic as either code.
+#
+# Why the set matters more than the label: a throttle that lands in the
+# GENERIC failure path re-probes on the BACKOFF_CAP_S curve — 600s. Three
+# throttled accounts on that curve is 18 requests/hour spent to learn nothing,
+# which alone holds a saturated org at its cap. Measured: that loop ran 18
+# hours without recovering, retrying at exactly 10-minute spacing throughout.
+THROTTLE_ERRORS = frozenset({"http-429", "http-403"})
+
+# Retry cap for a throttle carrying no Retry-After, before the peer divisor.
+# Deliberately under TRUST_MAX_AGE_S (3600): a row must never be parked longer
+# than its own last_good stays trusted, or it is un-pollable and unknown at the
+# same time — the blind state `_failure_backoff_s`'s PARK BOUND exists to
+# bound, and the one autoswitch reads as failover pressure.
+THROTTLE_BACKOFF_CAP_S = 1800.0
 # Exponent clamp: a permanently failing account increments its failure count
 # forever, and 2**n stops converting to float at n >= 1024 (OverflowError).
 # The curve already saturates at BACKOFF_CAP_S by shift 5, so any cap above
@@ -521,16 +545,37 @@ def _rate_limited_trust_ok(
     return now < (min(soonest, ceiling) if soonest is not None else ceiling)
 
 
+def _throttle_curve_cap(rate_limited: bool, share: float) -> float:
+    """Ceiling on the exponential retry curve.
+
+    A fault (timeout, network) keeps the plain ``BACKOFF_CAP_S``: it costs the
+    budget nothing to retry and the user wants it back quickly. A THROTTLE is
+    the opposite — each probe is itself a request in the trailing hour it is
+    waiting out — so its ceiling is divided among the accounts sharing the
+    budget, exactly as ``poll_policy`` divides the success cadence.
+    """
+    if not rate_limited:
+        return BACKOFF_CAP_S
+    return min(BACKOFF_CAP_S * max(1.0, share), THROTTLE_BACKOFF_CAP_S)
+
+
 def _failure_backoff_s(
     consecutive_failures: int,
     retry_after_s: float | None,
     *,
     rate_limited: bool = True,
+    share: float = 1.0,
 ) -> float:
-    """Seconds to stay in backoff after a failed fetch."""
+    """Seconds to stay in backoff after a failed fetch.
+
+    ``rate_limited`` means "the server shed this request" (``THROTTLE_ERRORS``),
+    not specifically 429. ``share`` is the number of accounts drawing on one
+    request budget; it widens the throttle curve only, never a fault's.
+    """
+    curve_cap = _throttle_curve_cap(rate_limited, share)
     computed = min(
         BACKOFF_BASE_S * (2 ** min(max(0, consecutive_failures - 1), BACKOFF_MAX_SHIFT)),
-        BACKOFF_CAP_S,
+        curve_cap,
     )
     if retry_after_s is None:
         return computed
@@ -542,8 +587,11 @@ def _failure_backoff_s(
             # docstring; see the ceiling discussion above). Fall through to
             # the plain exponential curve, same as no header at all.
             return computed
-        # Saturated-budget edge: wait before probing again.
-        return min(max(computed, EDGE_BACKOFF_S), BACKOFF_CAP_S)
+        # Saturated-budget edge: wait before probing again. Clamped to the
+        # same peer-divided ceiling as the curve above — at the edge, freed
+        # capacity has to outpace the probing of EVERY account sharing the
+        # budget, not just this one.
+        return min(max(computed, EDGE_BACKOFF_S), curve_cap)
     # Burst rule: the server's ask plus a margin (bounded by the cap); our own
     # curve may still wait longer. Only above BACKOFF_CAP_S, because a short
     # ask was separately measured as ACCURATE — not because the curve
@@ -899,14 +947,15 @@ class UsageStore:
             # trust bridge up: when another collector just won the fetch, this
             # reader must not flip trusted → unknown (and e.g. count an
             # unhealthy tick) for the seconds the result is in flight.
-            # A usage-endpoint 429 throttles polling without moving the
-            # account's real windows. Usage is monotone within a window, so
-            # last_good is a valid lower bound until that window resets: trust it
-            # right up to the earliest future reset (data-driven, no fixed
-            # clock). Rows with no reset info fall back to a bounded ceiling. A
-            # non-429 failure (timeout/network) is no evidence last_good still
-            # holds, so it always uses the general ceiling.
-            if row.get("lastError") == "http-429":
+            # A usage-endpoint THROTTLE (429 or 403 — see THROTTLE_ERRORS)
+            # sheds polling without moving the account's real windows. Usage is
+            # monotone within a window, so last_good is a valid lower bound
+            # until that window resets: trust it right up to the earliest
+            # future reset (data-driven, no fixed clock). Rows with no reset
+            # info fall back to a bounded ceiling. A FAULT (timeout/network) is
+            # no evidence last_good still holds, so it always uses the general
+            # ceiling.
+            if row.get("lastError") in THROTTLE_ERRORS:
                 within_ceiling = _rate_limited_trust_ok(
                     last_good if isinstance(last_good, dict) else None,
                     age_s,
@@ -1061,6 +1110,28 @@ class UsageStore:
         now = self.clock()
         accepted: set[str] = set()
 
+        def share_for(num: str) -> float:
+            """How many accounts draw on this slot's request budget.
+
+            Both sources are unioned on purpose: ``identities`` is the caller's
+            live view but can be a single slot (``cswap --status``), and the
+            stored rows remember every slot this machine polls. Taking only the
+            caller's view would let a single-slot command write a backoff sized
+            for a lone account onto a row that is in fact one of four — the
+            exact under-division that kept the budget saturated.
+            """
+            org = identities.get(num, ("", ""))[1]
+            if not org:
+                return 1.0  # unknown org is its own group, not pooled
+            peers = {slot for slot, ident in identities.items() if ident[1] == org}
+            peers |= {
+                slot
+                for slot, stored in rows.items()
+                if isinstance(stored, dict)
+                and stored.get("organizationUuid") == org
+            }
+            return float(max(1, len(peers)))
+
         def apply(num: str, row: dict) -> None:
             accepted.add(num)
             rec = outcomes[num]
@@ -1085,14 +1156,18 @@ class UsageStore:
                 failures = int(row.get("consecutiveFailures") or 0) + 1
                 row["consecutiveFailures"] = failures
                 row["lastError"] = rec.error
-                if rec.error == "http-429":
+                if rec.error in THROTTLE_ERRORS:
                     # Kept across later successes: the poll planner floors the
-                    # cadence while a 429 is recent (see UsageEntry.last_429_at).
+                    # cadence while a throttle is recent (see
+                    # UsageEntry.last_429_at). The FIELD NAME stays `last429At`
+                    # — it is persisted state read by older builds, and a 403
+                    # is the same signal under a different code.
                     row["last429At"] = now
                 row["backoffUntil"] = now + _failure_backoff_s(
                     failures,
                     rec.retry_after_s,
-                    rate_limited=rec.error == "http-429",
+                    rate_limited=rec.error in THROTTLE_ERRORS,
+                    share=share_for(num),
                 )
                 # Only a permanent-auth failure advances the dead-token count; a
                 # transient error (429/timeout) leaves it as-is — it is no

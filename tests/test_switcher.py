@@ -1494,6 +1494,49 @@ class TestListAccountsUsage:
         entry = store.entries(ident2)["2"]
         assert entry.next_poll_at <= time_mod.time() + 1
 
+    def test_replan_new_active_writes_the_peer_scaled_floor(
+        self, temp_home: Path, mock_claude_config: Path
+    ):
+        """The post-switch replan is a SECOND writer of pollIntervalS. Writing
+        the bare MIN_INTERVAL_S here would reset a correctly-widened plan to
+        180s on every switch — on a 4-account org, one slot spending the whole
+        org's budget, which is the saturation this scaling exists to end."""
+        import time as time_mod
+
+        from claude_swap import poll_policy
+
+        switcher = ClaudeAccountSwitcher()
+        switcher._setup_directories()
+        ident = {"1": ("a@x.com", "org-shared")}
+        store = switcher._usage_store
+        store.record({"1": FetchRecord(usage={"five_hour": {"pct": 10}})}, ident)
+        store.set_poll_plan({"1": (time_mod.time() + 9_000.0, 9_000.0)}, ident)
+
+        switcher.usage_budget_peers = lambda org: 4 if org else 1  # type: ignore[method-assign]
+        switcher._replan_new_active("1", "a@x.com", "org-shared")
+
+        entry = store.entries(ident)["1"]
+        assert entry.poll_interval_s == poll_policy.scaled_min_interval_s(4)
+        assert entry.poll_interval_s == poll_policy.MIN_INTERVAL_S * 4
+
+    def test_usage_budget_peers_counts_only_the_same_org(
+        self, temp_home: Path, mock_claude_config: Path
+    ):
+        switcher = ClaudeAccountSwitcher()
+        switcher._setup_directories()
+        switcher._get_sequence_data = lambda: {  # type: ignore[method-assign]
+            "accounts": {
+                "1": {"organizationUuid": "A"},
+                "2": {"organizationUuid": "A"},
+                "3": {"organizationUuid": "B"},
+                "4": {},  # no org recorded
+            }
+        }
+        assert switcher.usage_budget_peers("A") == 2
+        assert switcher.usage_budget_peers("B") == 1
+        # Blank is "not known", never pooled with the other unknowns.
+        assert switcher.usage_budget_peers("") == 1
+
     def test_replan_new_active_failure_is_logged_not_raised(
         self, temp_home: Path, mock_claude_config: Path, caplog
     ):

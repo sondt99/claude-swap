@@ -2045,12 +2045,18 @@ class AutoSwitchEngine:
         # over from a role change the switcher never saw (e.g. a manual
         # login) is overridden past the active age cap. Exhausted accounts
         # carry their own bounded plan and become due normally.
+        # Against the PEER-SCALED ceiling, not the bare constant: with several
+        # accounts sharing one request budget a correct active plan is
+        # legitimately wider than ACTIVE_MAX_INTERVAL_S (poll_policy, "ONE
+        # BUDGET, N ACCOUNTS"). Testing the bare constant would read every such
+        # plan as a leftover candidate plan and re-nominate the active account
+        # on every tick past 300s — spending the very budget the scaling frees.
+        active_ceiling = poll_policy.active_ceiling_s(self._budget_peers())
         stale_candidate_plan = (
             active_pre is not None
             and active_pre.age_s is not None
-            and active_pre.age_s >= poll_policy.ACTIVE_MAX_INTERVAL_S
-            and (active_pre.poll_interval_s or 0.0)
-            > poll_policy.ACTIVE_MAX_INTERVAL_S
+            and active_pre.age_s >= active_ceiling
+            and (active_pre.poll_interval_s or 0.0) > active_ceiling
             and (binding_pct(active_pre.last_good, self._models) or 0.0) < 100.0
         )
         overslept_plan = (
@@ -2336,6 +2342,24 @@ class AutoSwitchEngine:
             return max(interval, NO_RESET_FALLBACK_S)
         # ±10% jitter so multiple machines don't synchronize their API hits.
         return self._respect_poll_plan(interval * (0.9 + 0.2 * random.random()))
+
+    def _budget_peers(self) -> int:
+        """Accounts sharing the active account's usage-endpoint request budget.
+
+        Delegates to the switcher so every peer-scaled cadence in the process
+        divides by the same number (poll_policy, "ONE BUDGET, N ACCOUNTS").
+        Best-effort: any failure answers 1, the unscaled behaviour this
+        shipped with.
+        """
+        try:
+            current = self.switcher.current_account_number()
+            if current is None:
+                return 1
+            return self.switcher.usage_budget_peers(
+                self.switcher.account_identity(current).get("organizationUuid") or ""
+            )
+        except Exception:
+            return 1
 
     def _respect_poll_plan(self, delay: float) -> float:
         """Shorten a normal-cadence sleep to the store's own next-poll time.

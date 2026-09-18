@@ -1959,6 +1959,31 @@ class ClaudeAccountSwitcher:
         with FileLock(self.lock_file):
             self._write_account_credentials(account_num, email, credentials)
 
+    def usage_budget_peers(self, org_uuid: str) -> int:
+        """How many managed accounts draw on one usage-endpoint request budget.
+
+        The divisor behind every peer-scaled cadence (poll_policy, "ONE BUDGET,
+        N ACCOUNTS"). Counted over MANAGED accounts, not just the ones in
+        rotation: a disabled slot is held out of automatic switching but is
+        still polled for the dashboard, so it still spends the budget.
+
+        Read from stored identities — one sequence read, no credential I/O —
+        so the engine can call it on its tick path. A blank org answers 1:
+        blank means "not known", not "the same one".
+        """
+        if not org_uuid:
+            return 1
+        data = self._get_sequence_data() or {}
+        accounts = data.get("accounts") or {}
+        return max(
+            1,
+            sum(
+                1
+                for acct in accounts.values()
+                if (acct.get("organizationUuid") or "") == org_uuid
+            ),
+        )
+
     def account_identity(self, account_num: str) -> dict:
         """Stored identity for a slot: ``{"email", "organizationUuid", "uuid"}``."""
         data = self._get_sequence_data() or {}
@@ -5059,6 +5084,12 @@ class ClaudeAccountSwitcher:
         """
         now = self._usage_store.clock()
         threshold, models = self._poll_policy_inputs()
+        # Accounts sharing one organization share ONE usage-endpoint request
+        # budget, so each one's cadence is the org's budget divided by them
+        # (poll_policy, "ONE BUDGET, N ACCOUNTS"). Memoized per org rather than
+        # counted from `info_by_num`, so this pass and `_replan_new_active`
+        # cannot answer the divisor differently for the same account.
+        peers_by_org: dict[str, int] = {}
         plans: dict[str, tuple[float | None, float | None]] = {}
         for num, rec in records.items():
             if rec.sentinel is not None or rec.error is not None:
@@ -5074,6 +5105,10 @@ class ClaudeAccountSwitcher:
                 models=models,
                 recent_429=recent_429,
                 now=now,
+                peers=peers_by_org.setdefault(
+                    info_by_num[num][3] or "",
+                    self.usage_budget_peers(info_by_num[num][3] or ""),
+                ),
             )
         return plans
 
@@ -5095,12 +5130,18 @@ class ClaudeAccountSwitcher:
             entry = self._usage_store.entries(identities).get(number)
             if entry is None or entry.fetched_at is None:
                 return
-            next_poll = max(now, entry.fetched_at + poll_policy.MIN_INTERVAL_S)
+            # The floor is the ORG's, divided by the accounts sharing it — the
+            # same scaling `plan_after_fetch` applies. Writing the bare
+            # constant here would reset a correctly-widened plan to 180s on
+            # every switch, which on a 4-account org is the whole budget spent
+            # by one slot.
+            floor = poll_policy.scaled_min_interval_s(
+                self.usage_budget_peers(org_uuid or "")
+            )
+            next_poll = max(now, entry.fetched_at + floor)
             if entry.next_poll_at is not None and entry.next_poll_at <= next_poll:
                 return
-            self._usage_store.set_poll_plan(
-                {number: (next_poll, poll_policy.MIN_INTERVAL_S)}, identities
-            )
+            self._usage_store.set_poll_plan({number: (next_poll, floor)}, identities)
         except Exception as e:
             self._logger.warning(
                 f"Post-switch poll re-plan failed (switch itself succeeded): {e}"

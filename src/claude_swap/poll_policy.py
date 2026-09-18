@@ -24,6 +24,35 @@ cannot be relied on to clear a block, and two machines holding different
 tokens for one account may share one budget, which is what
 ``POST_429_BACKOFF_MULT`` below exists to converge.
 
+ONE BUDGET, N ACCOUNTS. Every constant below sizes ONE account's cadence, but
+the budget they are sized against belongs to the *identity*, and under the
+fixed-deadline regime that identity is the account/org — so N accounts in one
+organization draw on ONE budget, not N. Their rates ADD. Measured here
+2026-09-18 on a 4-account org, from the store's own persisted intervals
+(600/450/270/600s):
+
+    3600/600 + 3600/450 + 3600/270 + 3600/600  =  33 requests/hour
+
+against the ~28-30/hour cap — permanently over. The same store with 3 accounts
+had run a month with zero 429s (27/hour, just under), and the first http-403
+in that month's log landed ~18h after the 4th account was added. Saturation
+then became self-sustaining: three accounts failing, each re-probing on the
+store's generic 600s failure cap, is 18 requests/hour of pure waste that alone
+holds the org at the cap. It ran 18 hours and did not recover on its own.
+
+So the per-account cadence must be the org's budget DIVIDED by the accounts
+sharing it: ``budget_share`` scales every floor and ceiling below by the peer
+count, which keeps the module's ~20 requests/hour target a property of the ORG
+rather than of each account. At peers=1 the scale is 1.0 and nothing moves.
+
+This is scope-conservative by design. Whether the shared counter is really the
+org or the egress IP (Cloudflare fronts the endpoint, and every collector on
+one machine shares an IP) was NOT separable from the evidence above — both
+predict exactly what was measured, and both are fixed by dividing the rate.
+What would tell them apart is two machines on different networks holding the
+same org's accounts; until someone measures that, treat the divisor as sound
+and the *reason* for it as two candidates, not one.
+
 Error bars: the horizon is bracketed to ~55-64 minutes from a single
 transition event, the exact edge algorithm (likely a Cloudflare
 sliding-window approximation) is undocumented, and Anthropic can retune it
@@ -92,6 +121,37 @@ URGENT_INTERVAL_S = 60.0
 ACTIVE_MAX_INTERVAL_S = 300.0
 CANDIDATE_DEFAULT_INTERVAL_S = 300.0
 CANDIDATE_MAX_INTERVAL_S = 600.0
+
+# Every interval above is one account's share of a budget that belongs to the
+# org (see "ONE BUDGET, N ACCOUNTS" in the module docstring), so each is
+# widened by the number of accounts drawing on it. Clamped at
+# POST_429_MAX_INTERVAL_S — the widest cadence this module ever intends — so a
+# large org can never plan a poll so far out that the row ages into "unknown"
+# (usage_store.TRUST_MAX_AGE_S, 3600s) purely from cadence, which would hand
+# the engine an unknown-usage account to fail over from.
+def budget_share(peers: int) -> float:
+    """Multiplier on every cadence floor/ceiling for ``peers`` accounts
+    sharing one request budget. ``1.0`` for a lone account."""
+    return float(max(1, peers))
+
+
+def _scaled(interval_s: float, share: float) -> float:
+    return min(interval_s * share, POST_429_MAX_INTERVAL_S)
+
+
+def scaled_min_interval_s(peers: int) -> float:
+    """The cadence floor at this peer count — what any caller writing a plan
+    outside ``plan_after_fetch`` must use instead of ``MIN_INTERVAL_S``."""
+    return _scaled(MIN_INTERVAL_S, budget_share(peers))
+
+
+def active_ceiling_s(peers: int) -> float:
+    """The widest cadence an ACTIVE account's plan can carry at this peer
+    count. Consumers that test a persisted plan for "too slow to be an active
+    plan" must use this, not ``ACTIVE_MAX_INTERVAL_S`` — at peers>1 a correct
+    active plan is legitimately wider than the unscaled constant."""
+    return _scaled(ACTIVE_MAX_INTERVAL_S, budget_share(peers))
+
 
 # Exhaustion is stable enough to poll slowly, but not to stop polling until a
 # reported reset. Quota grants and provider-side corrections can make an
@@ -202,6 +262,7 @@ def plan_after_fetch(
     models: tuple[str, ...],
     recent_429: bool,
     now: float,
+    peers: int = 1,
     rng: Callable[[], float] = random.random,
 ) -> tuple[float, float]:
     """``(next_poll_at, interval_s)`` for an account just fetched successfully.
@@ -217,9 +278,21 @@ def plan_after_fetch(
     reset (+ ``RESET_SLACK_S``). An at-limit account keeps a bounded slow
     poll instead of sleeping until that reset, so an early provider-side
     quota grant is observed and its decision-grade status stays current.
+
+    ``peers`` is how many accounts share this one's request budget (see "ONE
+    BUDGET, N ACCOUNTS" in the module docstring); every floor and ceiling
+    below is widened by it, so the ~20 requests/hour target is the ORG's, not
+    each account's. ``peers=1`` reproduces the unscaled behaviour exactly.
     """
-    default = MIN_INTERVAL_S if is_active else CANDIDATE_DEFAULT_INTERVAL_S
-    ceiling = ACTIVE_MAX_INTERVAL_S if is_active else CANDIDATE_MAX_INTERVAL_S
+    share = budget_share(peers)
+    min_interval = _scaled(MIN_INTERVAL_S, share)
+    urgent_interval = _scaled(URGENT_INTERVAL_S, share)
+    default = _scaled(
+        MIN_INTERVAL_S if is_active else CANDIDATE_DEFAULT_INTERVAL_S, share
+    )
+    ceiling = _scaled(
+        ACTIVE_MAX_INTERVAL_S if is_active else CANDIDATE_MAX_INTERVAL_S, share
+    )
     base = prev_interval_s or default
     prev_pct = binding_pct(prev_usage, models)
     new_pct = binding_pct(new_usage, models)
@@ -228,13 +301,13 @@ def plan_after_fetch(
         interval = default
     elif abs(new_pct - prev_pct) >= MOVEMENT_DELTA_PCT:
         moving = True
-        interval = max(MIN_INTERVAL_S, base / 2)
+        interval = max(min_interval, base / 2)
     else:
         # Floored so a sub-floor base (urgent mode's 60s) snaps straight back
         # to the normal cadence once movement stops, instead of decaying
         # through 90s/135s polls that the budget never intended.
         moving = False
-        interval = min(ceiling, max(MIN_INTERVAL_S, base * 1.5))
+        interval = min(ceiling, max(min_interval, base * 1.5))
     if (
         is_active
         and moving
@@ -242,13 +315,15 @@ def plan_after_fetch(
         and new_pct is not None
         and new_pct >= threshold - ESCALATION_MARGIN_PCT
     ):
-        interval = URGENT_INTERVAL_S
+        interval = urgent_interval
     if recent_429:
         # AIMD additive-increase: grow the interval multiplicatively from the
         # last one toward the wider 429 ceiling, so machines sharing a
         # contended token each retreat until their combined rate fits the
         # budget. Floored at POST_429_MIN_INTERVAL_S for the first 429.
-        increased = max(base * POST_429_BACKOFF_MULT, POST_429_MIN_INTERVAL_S)
+        increased = max(
+            base * POST_429_BACKOFF_MULT, _scaled(POST_429_MIN_INTERVAL_S, share)
+        )
         interval = min(POST_429_MAX_INTERVAL_S, max(interval, increased))
 
     headroom = oauth.account_headroom(new_usage, models)
@@ -256,7 +331,7 @@ def plan_after_fetch(
         # Keep probing exhausted accounts: Anthropic can grant/reset quota
         # before the previously advertised timestamp. Preserve a wider
         # post-429 interval if congestion control already selected one.
-        interval = max(interval, EXHAUSTED_INTERVAL_S)
+        interval = max(interval, _scaled(EXHAUSTED_INTERVAL_S, share))
 
     next_poll = now + interval * (1.0 + JITTER_FRAC * (2.0 * rng() - 1.0))
     if headroom is not None and headroom <= 0:
