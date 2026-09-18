@@ -382,3 +382,68 @@ class TestOrgBudgetIsDividedAmongPeers:
         _, active = _plan(is_active=True, peers=4, prev_interval_s=99_999.0)
         assert active > poll_policy.ACTIVE_MAX_INTERVAL_S
         assert active <= poll_policy.active_ceiling_s(4)
+
+
+class TestConsumersDoNotDriftFromTheCadence:
+    """The drift guard. Read this before changing any cadence constant.
+
+    Every surface that judges a reading "stale" has to agree with the cadence
+    poll_policy actually plans. Twice now one did not: the web banner kept a
+    fixed 900s line and the TUI a fixed 300s one, both sized against cadences
+    that predate `budget_share`. At four accounts in one org the policy plans
+    720-1800s, so both surfaces called a perfectly healthy engine stale -- the
+    banner then blamed a suspended laptop, which cost real debugging time on
+    2026-09-18.
+
+    These cases fail the moment a consumer is judged against anything but the
+    plan the row itself carries, at any peer count -- which is the only way
+    this stays fixed as the cadence keeps moving.
+    """
+
+    # Every cadence a plan can legitimately carry, at each peer count.
+    @staticmethod
+    def _plannable(peers):
+        share = poll_policy.budget_share(peers)
+        return {
+            "min": poll_policy.scaled_min_interval_s(peers),
+            "active_ceiling": poll_policy.active_ceiling_s(peers),
+            "candidate_ceiling": min(
+                poll_policy.CANDIDATE_MAX_INTERVAL_S * share,
+                poll_policy.POST_429_MAX_INTERVAL_S,
+            ),
+            "post_429_ceiling": poll_policy.POST_429_MAX_INTERVAL_S,
+        }
+
+    @pytest.mark.parametrize("peers", [1, 2, 3, 4, 8, 16])
+    def test_the_web_banner_accepts_every_plan_the_policy_can_make(self, peers):
+        from claude_swap.web import server as web_server
+
+        for name, interval in self._plannable(peers).items():
+            # A row that polled exactly on schedule: as old as its own plan.
+            row = {"ageSeconds": interval, "pollIntervalS": interval}
+            assert not web_server._is_behind_plan(row), (
+                f"peers={peers} {name}={interval}s: a row polling on schedule "
+                f"was called stale -- the banner has drifted from the cadence"
+            )
+
+    @pytest.mark.parametrize("peers", [1, 2, 3, 4, 8, 16])
+    def test_the_tui_does_not_dim_a_row_polling_on_schedule(self, peers):
+        from claude_swap.tui.widgets import stale_measurement
+        from claude_swap.usage_store import UsageEntry
+
+        for name, interval in self._plannable(peers).items():
+            # trust_extended is what the store sets while now < nextPollAt.
+            usage = UsageEntry(age_s=interval, trust_extended=True)
+            assert not stale_measurement(usage), (
+                f"peers={peers} {name}={interval}s: a row polling on schedule "
+                f"was dimmed -- the TUI has drifted from the cadence"
+            )
+
+    def test_a_row_genuinely_past_its_plan_is_still_flagged_everywhere(self):
+        """The guard must not have been bought by never flagging anything."""
+        from claude_swap.tui.widgets import stale_measurement
+        from claude_swap.usage_store import UsageEntry
+        from claude_swap.web import server as web_server
+
+        assert web_server._is_behind_plan({"ageSeconds": 5000.0, "pollIntervalS": 300.0})
+        assert stale_measurement(UsageEntry(age_s=5000.0, trust_extended=False))

@@ -22,6 +22,26 @@ from claude_swap.usage_store import STALE_OK_S
 from claude_swap.tui import data
 from claude_swap.tui.theme import Palette
 
+
+def stale_measurement(usage) -> bool:
+    """Whether a reading is old enough to dim — and not old BY DESIGN.
+
+    ``STALE_OK_S`` on its own drifted: poll_policy scales every cadence by the
+    accounts sharing the org's request budget, so at four accounts a correct
+    plan is 720s and a row polling dead on schedule spent ~58% of its cycle
+    dimmed. A signal that is on during normal operation is not a signal.
+
+    ``trust_extended`` is the store's own "this staleness is scheduler-chosen"
+    flag (``now < nextPollAt``), which is what the engine's decision path
+    already keys on — so reusing it here is what keeps the three surfaces from
+    drifting apart again as the cadence changes.
+    """
+    return (
+        usage.age_s is not None
+        and usage.age_s > STALE_OK_S
+        and not usage.trust_extended
+    )
+
 if TYPE_CHECKING:
     from claude_swap.tui.app import CswapApp
 
@@ -215,7 +235,7 @@ def account_card_text(
             text.append(f" · {note}", style=palette.muted)
         return text
 
-    stale = acc.usage.age_s is not None and acc.usage.age_s > STALE_OK_S
+    stale = stale_measurement(acc.usage)
     label_width = max(len(label) for label, _pct, _suffix, _full in rows)
     bar_width = max(12, min(30, width - 42 - label_width))
     # everything on a row except the suffix: indent, label, bar, " NNN%", gap
@@ -270,7 +290,7 @@ def mini_account_text(
 
     last_good = acc.usage.last_good
     fetched_at = acc.usage.fetched_at
-    stale = acc.usage.age_s is not None and acc.usage.age_s > STALE_OK_S
+    stale = stale_measurement(acc.usage)
     parts = 0
     for key, label in (("five_hour", "5h"), ("seven_day", "7d")):
         window = last_good.get(key) if isinstance(last_good, dict) else None
