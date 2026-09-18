@@ -651,6 +651,29 @@ function renderPause(p) {
 // messages. Reporting the first for the second produced the self-contradictory
 // "Usage fetches are failing — 0 account(s)", and sent the reader off debugging
 // TLS when the real cause was a suspended laptop.
+
+// ...and the advice has to match the FAILURE KIND too. A usage-endpoint
+// throttle (429, or 403 -- Cloudflare answers over-budget traffic as either;
+// see usage_store.THROTTLE_ERRORS) is not a transport fault: the connection
+// works, the accounts work, and only the stats endpoint is shedding requests.
+// Handing that reader a TLS check sends them to debug a link that is provably
+// fine -- measured 2026-09-18, where the banner read `http-429` and the CA
+// hint next to it while the real cause was four accounts in one org drawing on
+// one request budget.
+function healthHint(lastError) {
+  if (lastError === "http-429" || lastError === "http-403") {
+    return `<span class="hint">This is a polling throttle, not a fault — the ` +
+      `accounts themselves are fine and still usable in Claude Code; only ` +
+      `these usage numbers are rate limited. It clears on its own as the ` +
+      `endpoint's trailing hour frees up.` +
+      `\ndocker logs cswap-auto --tail 200 | grep -c http-4` +
+      `\n→ still climbing = the org's combined poll rate is over budget</span>`;
+  }
+  return `<span class="hint">docker exec cswap-auto python -c ` +
+    `"import urllib.request;urllib.request.urlopen('https://api.anthropic.com/v1/models',timeout=10)"` +
+    `\n→ HTTP 401 = TLS is fine (a real network fault) · CERTIFICATE_VERIFY_FAILED = missing CA bundle</span>`;
+}
+
 function renderHealth(h) {
   const el = $("health");
   if (!h || !h.degraded) { el.classList.remove("show"); return; }
@@ -664,9 +687,7 @@ function renderHealth(h) {
       `<b>Usage fetches are failing</b> — ${esc(h.failingCount)} account(s), ` +
       `oldest data ${esc(age)}${h.lastError ? ` · ${esc(h.lastError)}` : ""}. ` +
       `The engine still switches, but on stale numbers, so it will be late.` +
-      `<span class="hint">docker exec cswap-auto python -c ` +
-      `"import urllib.request;urllib.request.urlopen('https://api.anthropic.com/v1/models',timeout=10)"` +
-      `\n→ HTTP 401 = TLS is fine (a real network fault) · CERTIFICATE_VERIFY_FAILED = missing CA bundle</span>`;
+      healthHint(h.lastError);
   } else {
     // Nothing is erroring; the numbers are just old. Overwhelmingly this is a
     // machine that was asleep or a stack that was stopped -- both self-heal on
