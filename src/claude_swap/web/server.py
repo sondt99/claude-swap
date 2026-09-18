@@ -333,14 +333,18 @@ class Service:
         payload = snapshot_to_json(snap, self._threshold())
         self._latest = payload
         self._broadcast(payload)
-        age = payload["health"]["maxAgeSeconds"]
+        # format_age answers None while a reading is fresher than SERVE_TTL_S,
+        # which after a successful refresh is the ordinary case — so its value
+        # cannot be interpolated blindly. It said "oldest reading now None".
+        note = format_age(payload["health"]["maxAgeSeconds"])
+        state = (
+            f"oldest reading {note.removeprefix('· ')}"
+            if note
+            else "all readings current"
+        )
         return {
             "ok": True,
-            "message": (
-                "Refreshed"
-                + (f" — oldest reading now {format_age(age)}" if age else "")
-                + f" ({remaining} left this hour)"
-            ),
+            "message": f"Refreshed — {state} ({remaining} left this hour)",
             "output": "",
             "payload": {"remaining": remaining},
         }

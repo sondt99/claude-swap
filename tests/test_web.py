@@ -697,3 +697,12 @@ class TestOnDemandRefresh:
         assert 'id="refresh"' in page
         assert '$("refresh").onclick' in page
         assert '"/api/refresh"' in page
+
+    def test_the_message_never_interpolates_a_missing_age(self, monkeypatch):
+        """format_age answers None while a reading is fresher than
+        SERVE_TTL_S, which after a successful refresh is the ordinary case.
+        Interpolating it produced "oldest reading now None"."""
+        svc = self._service(monkeypatch)
+        message = svc.refresh_now()["message"]
+        assert "None" not in message
+        assert "all readings current" in message
