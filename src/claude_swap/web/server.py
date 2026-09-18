@@ -62,6 +62,21 @@ INDEX = HERE / "index.html"
 # nothing but a lock acquisition on most passes (see SnapshotSource docstring).
 POLL_INTERVAL_S = 10.0
 MAX_SSE_CLIENTS = 8
+
+# On-demand refreshes the org's request budget can absorb, per rolling hour.
+#
+# Deliberately small, and it is the active cadence that makes it so. With the
+# active row at poll_policy.SERVE_TTL_S the planned total is ~26 requests/hour
+# of a measured ~28-30 cap, which leaves about 2. A press costs less than it
+# looks -- a fetch rewrites the row's plan from now, so it mostly DISPLACES
+# the poll that was already scheduled -- but "less than it looks" is not
+# "free", and a held-down button or a second tab would be neither. Four is
+# roughly one full four-account refresh per hour.
+#
+# Widen this by slowing the active row: at ACTIVE_FAST_LANE_S of 300s the
+# planned total is ~24/hour and there is twice the room.
+ON_DEMAND_HOURLY_ALLOWANCE = 4
+ON_DEMAND_WINDOW_S = 3600.0
 # Also the ceiling on how long a departed client can hold a slot, since the
 # disconnect check runs once per wait.
 SSE_KEEPALIVE_S = 5.0
@@ -272,6 +287,11 @@ class Service:
         self.source = SnapshotSource(self.switcher)
         self._lock = threading.Lock()
         self._latest: dict | None = None
+        # Timestamps of on-demand refreshes, for ON_DEMAND_HOURLY_ALLOWANCE.
+        # Per-process and not persisted: a restart forgiving the window is the
+        # right failure mode for a courtesy limit, and the store's own
+        # SERVE_TTL_S is the hard floor underneath it either way.
+        self._on_demand_at: list[float] = []
         self._subscribers: list[queue.Queue] = []
         self._sub_lock = threading.Lock()
         self._wake = threading.Event()
@@ -285,6 +305,45 @@ class Service:
         self._latest = payload
         self._broadcast(payload)
         return payload
+
+    def refresh_now(self) -> dict:
+        """The dashboard's explicit refresh: fetch every row whose data is
+        older than the store's serve TTL, ignoring its poll plan."""
+        now = time.time()
+        with self._lock:
+            self._on_demand_at = [
+                t for t in self._on_demand_at if now - t < ON_DEMAND_WINDOW_S
+            ]
+            spent = len(self._on_demand_at)
+            if spent >= ON_DEMAND_HOURLY_ALLOWANCE:
+                wait_s = ON_DEMAND_WINDOW_S - (now - self._on_demand_at[0])
+                return {
+                    "ok": False,
+                    "message": (
+                        f"Refresh limit reached ({ON_DEMAND_HOURLY_ALLOWANCE}/hour) "
+                        f"— the org's request budget is nearly spent by the "
+                        f"background cadence. Try again in {int(wait_s // 60) + 1} min."
+                    ),
+                    "output": "",
+                    "payload": {"remaining": 0},
+                }
+            self._on_demand_at.append(now)
+            remaining = ON_DEMAND_HOURLY_ALLOWANCE - len(self._on_demand_at)
+            snap = self.source.take(full=True)
+        payload = snapshot_to_json(snap, self._threshold())
+        self._latest = payload
+        self._broadcast(payload)
+        age = payload["health"]["maxAgeSeconds"]
+        return {
+            "ok": True,
+            "message": (
+                "Refreshed"
+                + (f" — oldest reading now {format_age(age)}" if age else "")
+                + f" ({remaining} left this hour)"
+            ),
+            "output": "",
+            "payload": {"remaining": remaining},
+        }
 
     def _threshold(self) -> float | None:
         """The engine's switch line, or None if settings can't be read.
@@ -697,7 +756,7 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("value must be a number")
             return svc.set_threshold(str(value))
         if route == "/api/refresh":
-            return {"ok": True, "message": "refreshed", "output": "", "payload": None}
+            return svc.refresh_now()
         return None
 
     # -- SSE ----------------------------------------------------------------

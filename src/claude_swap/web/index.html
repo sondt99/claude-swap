@@ -282,6 +282,7 @@
     <h1>cswap</h1>
     <div class="spacer"></div>
     <button id="pause">Auto: —</button>
+    <button id="refresh" title="Fetch fresh usage now, ignoring the poll plans. Limited per hour: the org's request budget is nearly spent by the background cadence.">Refresh</button>
     <button id="rotate">Rotate</button>
     <button id="avail">Next available</button>
     <button id="best" class="primary">Switch to best</button>
@@ -814,6 +815,12 @@ grid.addEventListener("click", (e) => {
 });
 
 $("pause").onclick = () => post("/api/autoswitch", { paused: !paused });
+// Explicit refresh. The background cadence is what the request budget can
+// afford continuously -- at four accounts in one org a candidate row is
+// planned 30 minutes out -- so this is the way to see current numbers when a
+// human is actually looking. The server enforces the hourly allowance and says
+// how many are left; `post` surfaces that message either way.
+$("refresh").onclick = () => post("/api/refresh", {});
 $("rotate").onclick = () => post("/api/switch-strategy", { strategy: null });
 $("avail").onclick = () => post("/api/switch-strategy", { strategy: "next-available" });
 $("best").onclick = () => post("/api/switch-strategy", { strategy: "best" });

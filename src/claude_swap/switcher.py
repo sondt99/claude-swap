@@ -1733,7 +1733,9 @@ class ClaudeAccountSwitcher:
             accounts_info, fetch=fetch, scheduled=scheduled
         )
 
-    def accounts_snapshot(self, fetch: set[str] | None = None) -> AccountsSnapshot:
+    def accounts_snapshot(
+        self, fetch: set[str] | None = None, *, on_demand: bool = False
+    ) -> AccountsSnapshot:
         """One-pass structured snapshot of every managed account, for the TUI.
 
         Metadata, active-slot detection, and usage entries all come from a
@@ -1743,8 +1745,17 @@ class ClaudeAccountSwitcher:
         has ``_collect_usage_entries`` semantics: ``None`` makes every stale
         account eligible; a set restricts which accounts *may* be fetched
         this pass.
+
+        ``on_demand`` is a human asking for fresh numbers now (the dashboard's
+        refresh button). It names every account explicitly, which is what
+        selects ``respect_plans=False`` downstream — so a row may be fetched
+        before its plan is due, bounded by ``SERVE_TTL_S`` like any other
+        fetch. Rate limiting belongs to the caller: the request budget cannot
+        absorb this being pressed in a loop.
         """
         accounts_info = self._build_accounts_info()
+        if on_demand and fetch is None:
+            fetch = {str(info[0]) for info in accounts_info}
         entries = self._collect_usage_entries(accounts_info, fetch=fetch)
         seq_data = self._get_sequence_data() or {}
         active_number: str | None = None

@@ -124,7 +124,9 @@ class FakeSwitcher:
 
     # -- surface the TUI consumes ------------------------------------------
 
-    def accounts_snapshot(self, fetch: set[str] | None = None) -> AccountsSnapshot:
+    def accounts_snapshot(
+        self, fetch: set[str] | None = None, *, on_demand: bool = False
+    ) -> AccountsSnapshot:
         self.fetch_sets.append(fetch)
         return AccountsSnapshot(
             active_number=self.active,
@@ -218,7 +220,9 @@ class BlockingSnapshotSwitcher(FakeSwitcher):
         self.store_done = threading.Event()
         self.block_store = False
 
-    def accounts_snapshot(self, fetch: set[str] | None = None) -> AccountsSnapshot:
+    def accounts_snapshot(
+        self, fetch: set[str] | None = None, *, on_demand: bool = False
+    ) -> AccountsSnapshot:
         self.fetch_sets.append(fetch)
         if fetch is None:
             self.normal_started.set()

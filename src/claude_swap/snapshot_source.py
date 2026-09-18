@@ -27,10 +27,16 @@ from claude_swap.usage_store import UsageEntry
 class SnapshotSource:
     """Takes one coherent snapshot per call; the store paces the network.
 
-    ``full=True`` (the user's explicit refresh) is accepted for API
-    stability but is no faster than a normal pass: even an explicit refresh
-    is capped by the store's serve TTL and poll plans. ``store_only=True``
-    reads the store without any network eligibility.
+    ``full=True`` is the user's explicit refresh and now means it: it names
+    every account, which lets a row be fetched before its poll plan is due.
+    It is still capped by the store's serve TTL, so the fastest it can ever
+    move a row is ``SERVE_TTL_S`` — and the caller still owes it rate
+    limiting, because the org's request budget cannot absorb a held-down
+    button. It used to be accepted for API stability and do nothing at all,
+    which left no way to get fresh numbers on demand: the dashboard's only
+    freshness was whatever the background cadence had last written, and at
+    four accounts in one org that is 30 minutes for a candidate row.
+    ``store_only=True`` reads the store without any network eligibility.
     """
 
     def __init__(self, switcher: ClaudeAccountSwitcher) -> None:
@@ -43,7 +49,9 @@ class SnapshotSource:
     ) -> AccountsSnapshot:
         """Blocking snapshot pass; call from a thread worker."""
         fetch: set[str] | None = set() if store_only else None
-        snap = self.switcher.accounts_snapshot(fetch=fetch)
+        snap = self.switcher.accounts_snapshot(
+            fetch=fetch, on_demand=full and not store_only
+        )
         with self._lock:
             snap = self._reconcile(snap)
             self._last = snap

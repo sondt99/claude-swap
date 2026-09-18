@@ -621,3 +621,79 @@ class TestHealthStalenessIsJudgedPerPlan:
         assert health["degraded"] is True
         assert health["failingCount"] == 1
         assert health["lastError"] == "http-429"
+
+
+class TestOnDemandRefresh:
+    """`/api/refresh` used to return {"ok": true, "message": "refreshed"} and
+    do nothing at all, and no button called it -- so the dashboard's only
+    freshness was whatever the background cadence had last written. At four
+    accounts in one org that is 30 minutes for a candidate row, which is what
+    "it updates really slowly" was.
+    """
+
+    class _Source:
+        def __init__(self):
+            self.calls = []
+
+        def take(self, *, full=False, store_only=False):
+            self.calls.append({"full": full, "store_only": store_only})
+            return type(
+                "S", (), {"accounts": [], "active_number": None, "taken_at": 0.0}
+            )()
+
+    def _service(self, monkeypatch):
+        svc = web_server.Service.__new__(web_server.Service)
+        svc.source = self._Source()
+        svc._lock = threading.Lock()
+        svc._latest = None
+        svc._on_demand_at = []
+        svc._subscribers = []
+        svc._sub_lock = threading.Lock()
+        monkeypatch.setattr(svc, "_threshold", lambda: 90.0, raising=False)
+        monkeypatch.setattr(svc, "_broadcast", lambda payload: None, raising=False)
+        return svc
+
+    def test_it_actually_asks_for_a_full_pass(self, monkeypatch):
+        svc = self._service(monkeypatch)
+        result = svc.refresh_now()
+        assert result["ok"] is True
+        assert svc.source.calls == [{"full": True, "store_only": False}]
+
+    def test_the_hourly_allowance_is_enforced(self, monkeypatch):
+        svc = self._service(monkeypatch)
+        for _ in range(web_server.ON_DEMAND_HOURLY_ALLOWANCE):
+            assert svc.refresh_now()["ok"] is True
+        refused = svc.refresh_now()
+        assert refused["ok"] is False
+        assert refused["payload"]["remaining"] == 0
+        # The budget is the reason, so the message has to say so rather than
+        # looking like a fault.
+        assert "budget" in refused["message"]
+        # And no extra pass was taken.
+        assert len(svc.source.calls) == web_server.ON_DEMAND_HOURLY_ALLOWANCE
+
+    def test_the_window_rolls_forward(self, monkeypatch):
+        svc = self._service(monkeypatch)
+        for _ in range(web_server.ON_DEMAND_HOURLY_ALLOWANCE):
+            svc.refresh_now()
+        assert svc.refresh_now()["ok"] is False
+        # Age every stamp past the window.
+        svc._on_demand_at = [
+            t - web_server.ON_DEMAND_WINDOW_S - 1.0 for t in svc._on_demand_at
+        ]
+        assert svc.refresh_now()["ok"] is True
+
+    def test_remaining_counts_down(self, monkeypatch):
+        svc = self._service(monkeypatch)
+        seen = [svc.refresh_now()["payload"]["remaining"] for _ in range(2)]
+        assert seen == [
+            web_server.ON_DEMAND_HOURLY_ALLOWANCE - 1,
+            web_server.ON_DEMAND_HOURLY_ALLOWANCE - 2,
+        ]
+
+    def test_the_button_exists_and_is_wired(self):
+        """The endpoint existing without a caller is how this was missed."""
+        page = (web_server.HERE / "index.html").read_text()
+        assert 'id="refresh"' in page
+        assert '$("refresh").onclick' in page
+        assert '"/api/refresh"' in page
