@@ -45,6 +45,7 @@ from claude_swap import paths
 from claude_swap.exceptions import ClaudeSwitchError
 from claude_swap.json_output import usage_to_json
 from claude_swap.locking import FileLock
+from claude_swap.poll_policy import JITTER_FRAC
 from claude_swap.settings import load_settings, set_setting
 from claude_swap.switcher import ClaudeAccountSwitcher
 from claude_swap.tui.data import (
@@ -146,9 +147,40 @@ def account_to_json(acc) -> dict:
     return row
 
 
-# An account is only *expected* to be this stale: the slowest scheduled cadence
-# in poll_policy is 600s (idle candidate / exhausted), plus jitter and a tick.
+# Fallback staleness line, used ONLY for an account carrying no plan yet (never
+# fetched, or a row predating the stored cadence). An account that HAS a plan is
+# judged against its own — see `_is_behind_plan`.
 STALE_AFTER_S = 900.0
+
+# Why one fixed line cannot be the general test: poll_policy scales every
+# cadence by the accounts sharing the org's request budget (`budget_share`), so
+# the slowest CORRECT cadence is no longer the 600s idle-candidate ceiling this
+# constant was sized against. At four accounts in one org the store plans
+# 1080-1350s, and up to POST_429_MAX_INTERVAL_S (1800s) after a throttle — all
+# past 900s, all exactly as designed. Judging them by one number made the banner
+# fire on a healthy engine, and then blame the wrong thing: the non-failing
+# branch reads "this machine was asleep or the stack was stopped", which sent
+# the reader to debug a stack that was ticking every 15s. Measured 2026-09-18,
+# on the org-budget fix that widened the cadence without moving this line.
+#
+# So an account is late only against ITS OWN plan, plus what that plan already
+# admits: poll_policy's scheduling jitter, and the tick/fetch/snapshot skew.
+STALE_GRACE_FRAC = JITTER_FRAC
+STALE_GRACE_S = 120.0
+
+
+def _is_behind_plan(row: dict) -> bool:
+    """Whether an account is overdue against the cadence it actually
+    scheduled — not against a global guess at one."""
+    age = row["ageSeconds"]
+    if age is None:
+        # No reading at all is not "stale data"; it is a row with nothing to
+        # age, and the failure counters already speak for it.
+        return False
+    plan = row["pollIntervalS"]
+    if not plan:
+        return age > STALE_AFTER_S
+    return age > plan * (1.0 + STALE_GRACE_FRAC) + STALE_GRACE_S
 
 # Presence of this file holds the autoswitch engine off. A file rather than an
 # in-process flag because the engine may run in a *different container*; both
@@ -190,6 +222,7 @@ def snapshot_to_json(snap, threshold: float | None = None) -> dict:
     accounts = [account_to_json(a) for a in snap.accounts]
     ages = [a["ageSeconds"] for a in accounts if a["ageSeconds"] is not None]
     failing = [a for a in accounts if (a["failures"] or 0) >= 2]
+    behind = [a for a in accounts if _is_behind_plan(a)]
     max_age = max(ages) if ages else None
     return {
         "activeNumber": snap.active_number,
@@ -203,9 +236,13 @@ def snapshot_to_json(snap, threshold: float | None = None) -> dict:
         # tick, so a `cswap config set` has to reach this page the same way.
         "threshold": threshold,
         "health": {
-            "degraded": bool(failing) or (max_age is not None and max_age > STALE_AFTER_S),
+            "degraded": bool(failing) or bool(behind),
             "failingCount": len(failing),
-            "maxAgeSeconds": max_age,
+            # The oldest reading among the rows actually overdue. The plain
+            # maximum named whichever row happened to be oldest, which at
+            # peers>1 is routinely a row polling dead on schedule — so the
+            # banner quoted an age that was evidence of nothing.
+            "maxAgeSeconds": max(a["ageSeconds"] for a in behind) if behind else max_age,
             "lastError": failing[0]["lastError"] if failing else None,
         },
     }

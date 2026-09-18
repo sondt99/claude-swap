@@ -544,3 +544,80 @@ class TestSseSlotsSurviveRefreshes:
         for _ in range(MANY := web_server.MAX_SSE_CLIENTS * 4):
             assert svc.subscribe() is not None
         assert len(svc._subscribers) == web_server.MAX_SSE_CLIENTS
+
+
+class TestHealthStalenessIsJudgedPerPlan:
+    """The banner fired on an engine working exactly as designed.
+
+    poll_policy scales every cadence by the accounts sharing the org's request
+    budget, so after the org-budget fix a correct plan at four accounts is
+    1080-1350s -- past the fixed 900s line the banner still used. It then told
+    the reader the machine had been asleep while the stack ticked every 15s.
+    Staleness is measured against each account's OWN plan.
+    """
+
+    @staticmethod
+    def _snap(rows):
+        accounts = [
+            type("A", (), {
+                "number": n, "email": f"a{n}@x", "alias": "", "org_name": "",
+                "display_tag": "", "is_active": n == 1, "kind": "oauth",
+                "switchable": True, "disabled": False,
+                "usage": type("U", (), {
+                    "sentinel": None, "age_s": age, "last_error": err,
+                    "consecutive_failures": fails, "poll_interval_s": plan,
+                    "last_good": None,
+                })(),
+            })()
+            for n, (age, plan, err, fails) in enumerate(rows, start=1)
+        ]
+        return type(
+            "S", (), {"accounts": accounts, "active_number": 1, "taken_at": 0.0}
+        )()
+
+    def _health(self, rows):
+        return web_server.snapshot_to_json(self._snap(rows))["health"]
+
+    def test_a_wide_plan_polling_on_schedule_is_not_degraded(self):
+        """1350s plan, 1190s old: past the old 900s line, well inside its own.
+        This is the exact row that raised a false banner on 2026-09-18."""
+        health = self._health([(1190.0, 1350.0, None, 0)])
+        assert health["degraded"] is False
+        assert health["failingCount"] == 0
+
+    def test_an_account_past_its_own_plan_is_still_reported(self):
+        health = self._health([(3000.0, 1350.0, None, 0)])
+        assert health["degraded"] is True
+        assert health["maxAgeSeconds"] == 3000.0
+
+    def test_jitter_and_a_tick_do_not_trip_the_banner(self):
+        """A poll may land up to JITTER_FRAC late by construction, plus the
+        tick and the fetch -- none of which is evidence of a fault."""
+        plan = 300.0
+        edge = plan * (1.0 + web_server.STALE_GRACE_FRAC) + web_server.STALE_GRACE_S
+        assert self._health([(edge - 1.0, plan, None, 0)])["degraded"] is False
+        assert self._health([(edge + 1.0, plan, None, 0)])["degraded"] is True
+
+    def test_a_row_with_no_plan_yet_falls_back_to_the_fixed_line(self):
+        assert self._health([(1000.0, None, None, 0)])["degraded"] is True
+        assert self._health([(800.0, None, None, 0)])["degraded"] is False
+
+    def test_a_row_with_no_reading_is_not_called_stale_data(self):
+        """age_s None means there is nothing to age; the failure counters are
+        what speak for such a row."""
+        assert self._health([(None, None, None, 0)])["degraded"] is False
+
+    def test_the_quoted_age_names_an_overdue_row_not_the_oldest_one(self):
+        """Account 2 is the oldest but on schedule; account 1 is the one truly
+        late. Quoting 1400s sent the reader after a healthy row."""
+        health = self._health(
+            [(900.0, 300.0, None, 0), (1400.0, 1800.0, None, 0)]
+        )
+        assert health["degraded"] is True
+        assert health["maxAgeSeconds"] == 900.0
+
+    def test_failures_still_dominate_regardless_of_plan(self):
+        health = self._health([(100.0, 1800.0, "http-429", 6)])
+        assert health["degraded"] is True
+        assert health["failingCount"] == 1
+        assert health["lastError"] == "http-429"
