@@ -6894,3 +6894,69 @@ class TestFreshenRoutesThroughGate:
         assert gate_calls["args"][0] == "2"
         assert "called" not in direct, "freshen must not POST outside the gate"
 
+
+
+class TestEscalationCostsOneReadPerEpisode:
+    """The 80-requests/hour hole, closed.
+
+    Escalation passes an explicit fetch set, which makes
+    `usage_store._row_eligible` answer `poll_due or stale` with stale =
+    SERVE_TTL_S. So while the band stayed armed every row refetched every 180s
+    regardless of its plan: 80 req/hour at four accounts against a ~28-30 cap.
+    The band is ESCALATION_MARGIN_PCT wide, so how long that ran was the burn
+    rate's to decide -- ~6 minutes at the 2.56 %/min measured in the missed
+    switch, but ~62 minutes at the 0.24 %/min the same account held for the
+    hour before it. An hour at 80/hour is the 429 episode the org split exists
+    to prevent.
+    """
+
+    def _fetch_sets(self, harness, threshold, fetched_at):
+        entries = {
+            n: _entry_for(_usage(80.0 if n == "1" else 10.0), fetched_at)
+            for n in ("1", "2", "3")
+        }
+        with patch.object(
+            harness.switcher, "usage_entries_by_account", return_value=entries
+        ) as collect:
+            harness.engine._collect_scheduled_usage("1", threshold=threshold)
+        return [c.kwargs.get("fetch") for c in collect.call_args_list]
+
+    def test_the_arming_tick_still_refreshes_every_row(self, harness):
+        """Phase B's actual purpose is preserved."""
+        sets = self._fetch_sets(harness, 90.0, harness.clock.now)
+        assert {"1", "2", "3"} in sets
+
+    def test_a_later_tick_in_the_same_episode_refetches_nothing(self, harness):
+        # Arm the episode, then advance: the rows were read after it armed.
+        self._fetch_sets(harness, 90.0, harness.clock.now)
+        armed_at = harness.engine._read_state()["escalationArmedAt"]
+        assert armed_at is not None
+        harness.clock.now += 200.0  # past SERVE_TTL_S, which used to be enough
+        sets = self._fetch_sets(harness, 90.0, armed_at + 1.0)
+        assert {"1", "2", "3"} not in sets, (
+            "a row already read this episode was refetched -- the 180s "
+            "escalation cadence is back"
+        )
+
+    def test_leaving_the_band_starts_a_new_episode(self, harness):
+        self._fetch_sets(harness, 90.0, harness.clock.now)
+        assert harness.engine._read_state().get("escalationArmedAt") is not None
+        # Threshold far away -> not escalating -> episode cleared.
+        self._fetch_sets(harness, 99.9, harness.clock.now)
+        assert harness.engine._read_state().get("escalationArmedAt") is None
+        # ...and re-entering refreshes everything again.
+        assert {"1", "2", "3"} in self._fetch_sets(harness, 90.0, harness.clock.now)
+
+    def test_the_episode_survives_a_new_process(self, harness):
+        """The engine's supported shape is `cswap auto --once` on a timer, so
+        an in-memory episode would restart every tick and the gate would be a
+        no-op. This is why it lives in autoswitch_state.json."""
+        self._fetch_sets(harness, 90.0, harness.clock.now)
+        armed_at = harness.engine._read_state()["escalationArmedAt"]
+        harness.engine = harness._make_engine()  # a fresh process would do this
+        assert harness.engine._read_state()["escalationArmedAt"] == armed_at
+
+    def test_dry_run_still_writes_nothing(self, harness):
+        harness.engine = harness._make_engine(dry_run=True)
+        self._fetch_sets(harness, 90.0, harness.clock.now)
+        assert harness.engine._read_state().get("escalationArmedAt") is None
