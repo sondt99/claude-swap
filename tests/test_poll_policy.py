@@ -609,3 +609,58 @@ class TestTheBudgetStaysInsideWhatWasMeasured:
                              new_usage=_usage(30))
         per_hour = 3600.0 / active + (peers - 1) * (3600.0 / candidate)
         assert per_hour <= 28.0, f"peers={peers}: {per_hour:.1f} req/hour"
+
+
+class TestUrgentNeverSlowsTheRowItIsEscalatingOn:
+    """Two inversions, both introduced by the active fast lane and both found
+    by running the planner rather than reading it.
+
+    `interval = urgent_interval` was assigned outright, which was correct only
+    while the normal floor was always wider than URGENT_INTERVAL_S. Once the
+    active row moved to SERVE_TTL_S at four accounts, the in-band plan went
+    240s where the out-of-band plan was 180s: escalation made the row it
+    escalates on LESS observed, exactly when its number decides a switch.
+
+    The first repair floored it at min_interval, which silently disabled urgent
+    mode at one account -- URGENT_INTERVAL_S is 60s there against a 180s floor,
+    and urgent is precisely the mode allowed under the serve TTL.
+    """
+
+    @staticmethod
+    def _in_band(peers, base):
+        _, interval = _plan(
+            is_active=True,
+            peers=peers,
+            prev_interval_s=base,
+            prev_usage=_usage(80.0),
+            new_usage=_usage(84.0),
+            threshold=90.0,
+        )
+        return interval
+
+    def test_in_band_is_never_slower_than_out_of_band(self):
+        for peers in (1, 2, 3, 4, 5, 8, 12):
+            normal = poll_policy.active_interval_s(peers)
+            assert self._in_band(peers, normal) <= normal, (
+                f"peers={peers}: escalating slowed the row from {normal}s to "
+                f"{self._in_band(peers, normal)}s"
+            )
+
+    def test_urgent_still_beats_the_serve_ttl_at_one_account(self):
+        """The whole point of urgent mode, and what the first repair broke."""
+        assert self._in_band(1, poll_policy.MIN_INTERVAL_S) == (
+            poll_policy.URGENT_INTERVAL_S
+        )
+        assert poll_policy.URGENT_INTERVAL_S < poll_policy.SERVE_TTL_S
+
+    def test_where_urgent_is_faster_it_still_wins(self):
+        """At peer counts past the fast lane the even-split urgent price is
+        genuinely the quicker of the two, and must still apply."""
+        normal = poll_policy.active_interval_s(12)
+        assert self._in_band(12, normal) < normal
+
+    def test_the_in_band_rate_does_not_exceed_the_out_of_band_budget_at_four(self):
+        """Free at four accounts: 180s is already the floor, so escalating
+        costs no extra requests."""
+        normal = poll_policy.active_interval_s(4)
+        assert self._in_band(4, normal) == normal == poll_policy.SERVE_TTL_S

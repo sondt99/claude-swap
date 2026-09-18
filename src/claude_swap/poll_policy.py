@@ -467,7 +467,19 @@ def plan_after_fetch(
         and new_pct is not None
         and new_pct >= threshold - ESCALATION_MARGIN_PCT
     ):
-        interval = urgent_interval
+        # The FASTER of the two, never the slower. Assigning urgent_interval
+        # outright used to be right because the normal floor was always wider
+        # than it; once the active row moved to SERVE_TTL_S that inverted, and
+        # a burning row inside the band slowed from 180s to 240s at four
+        # accounts -- the row being escalated on became LESS observed at the
+        # one moment its number decides anything.
+        #
+        # Deliberately NOT floored at min_interval: urgent mode is the thing
+        # allowed to poll under the serve TTL (`usage_store.reserve`'s
+        # respect_plans=False mode exists for it), and at one account
+        # URGENT_INTERVAL_S is 60s against a 180s floor -- flooring it there
+        # disables urgent mode for the single-account case entirely.
+        interval = min(interval, urgent_interval)
     if recent_429:
         # AIMD additive-increase: grow the interval multiplicatively from the
         # last one toward the wider 429 ceiling, so machines sharing a
