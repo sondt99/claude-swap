@@ -436,17 +436,72 @@ def _classify_usage_error(e: Exception) -> tuple[str, float | None]:
     return type(e).__name__, None
 
 
+# Longest failure detail carried on a WARNING line. Long enough for an errno
+# and a host, short enough that a flapping link cannot fill a 1MB rotating log.
+_FAILURE_DETAIL_MAX = 120
+
+
+def _failure_detail(e: Exception, kind: str) -> str | None:
+    """The part of ``e`` the ``kind`` token does not already say.
+
+    ``http-429`` and friends carry their own meaning; ``network`` does not,
+    and it was the one that needed it. Measured 2026-09-19: three accounts
+    logged bare ``network`` for 51 minutes, and the log held nothing else —
+    the transport probe the banner suggests came back HTTP 401 (fine), so the
+    line named a kind nobody could act on.
+
+    Only the reason is taken, never ``str(e)`` for an HTTPError: the URL rides
+    in that repr, and this line is what users paste into public issues. The
+    usage endpoint takes no query string and the token travels in a header,
+    so a URLError reason (an OSError/SSLError/gaierror) carries no secret.
+    """
+    if isinstance(e, urllib.error.HTTPError):
+        return None  # the code is the whole story
+    if isinstance(e, urllib.error.URLError):
+        reason = e.reason
+        detail = (
+            f"{type(reason).__name__}: {reason}"
+            if isinstance(reason, BaseException)
+            else str(reason)
+        )
+    elif kind == "timeout":
+        return None  # nothing to add to "it did not answer in time"
+    else:
+        # The fallback kind IS the type name, so repeating it reads as
+        # "ValueError (ValueError: boom)". Only the message adds anything.
+        detail = str(e)
+    detail = " ".join(detail.split())
+    if not detail:
+        return None
+    return (
+        detail
+        if len(detail) <= _FAILURE_DETAIL_MAX
+        else detail[: _FAILURE_DETAIL_MAX - 1] + "…"
+    )
+
+
 def _log_usage_failure(
     context: str, e: Exception, kind: str, retry_after_s: float | None = None
 ) -> None:
     """One WARNING line with the cause so it lands in the default log file
-    (issue #85 was undiagnosable with failures swallowed at DEBUG); the full
-    exception repr stays at DEBUG. The line is what users paste into public
-    issues, so ``context`` must not carry the email, and the server's
-    Retry-After rides along when present (it answers the backoff-tuning
-    question without a second ask)."""
+    (issue #85 was undiagnosable with failures swallowed at DEBUG). The line
+    is what users paste into public issues, so ``context`` must not carry the
+    email, and the server's Retry-After rides along when present (it answers
+    the backoff-tuning question without a second ask).
+
+    The underlying reason rides on this line too, and must: the DEBUG line
+    below never reaches anywhere. ``logging_config`` puts the file handler at
+    DEBUG but leaves the LOGGER at INFO unless ``--debug``, and a logger drops
+    a record before any handler sees it — so the file has never held one DEBUG
+    line. Lowering the logger is not the fix either: ``build_usage_result``
+    debug-logs the entire usage payload on every fetch, which would fill a 1MB
+    rotating log in minutes.
+    """
     where = f" {context}" if context else ""
     cause = kind if retry_after_s is None else f"{kind}, retry-after {retry_after_s:.0f}s"
+    detail = _failure_detail(e, kind)
+    if detail:
+        cause += f" ({detail})"
     if kind == "http-429":
         # Whether the budget counts per access token or per account depends
         # on the org's 429 regime (both measured; see poll_policy), so the

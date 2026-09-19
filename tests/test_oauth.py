@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import urllib.error
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
@@ -1522,3 +1523,88 @@ class TestLoginExpiresAtIso:
     ])
     def test_anything_but_a_positive_epoch_is_unknown(self, creds):
         assert oauth.login_expires_at_iso(creds) is None
+
+
+class TestFailureDetailReachesTheLog:
+    """`network` on its own is not actionable, and it was all there was.
+
+    Measured 2026-09-19: three accounts logged bare `network` for 51 minutes
+    and the log held nothing else to go on — the transport probe the dashboard
+    banner suggests came back HTTP 401, i.e. fine. The reason had been sent to
+    a DEBUG line that cannot arrive: logging_config puts the FILE HANDLER at
+    DEBUG but leaves the LOGGER at INFO unless --debug, and a logger drops a
+    record before any handler sees it. The log file has never held one DEBUG
+    line.
+    """
+
+    def _detail(self, e):
+        kind, _ = oauth._classify_usage_error(e)
+        return kind, oauth._failure_detail(e, kind)
+
+    def test_a_network_failure_names_its_reason(self):
+        kind, detail = self._detail(
+            urllib.error.URLError(ConnectionRefusedError(111, "Connection refused"))
+        )
+        assert kind == "network"
+        assert "ConnectionRefusedError" in detail
+        assert "Connection refused" in detail
+
+    def test_dns_and_tls_are_distinguishable(self):
+        """The two causes the banner's own hint tells a reader to tell apart —
+        now available without running the probe."""
+        import socket as _socket
+        import ssl as _ssl
+
+        _, dns = self._detail(
+            urllib.error.URLError(_socket.gaierror(-3, "Temporary failure"))
+        )
+        _, tls = self._detail(
+            urllib.error.URLError(_ssl.SSLError(1, "CERTIFICATE_VERIFY_FAILED"))
+        )
+        assert "gaierror" in dns
+        assert "CERTIFICATE_VERIFY_FAILED" in tls
+        assert dns != tls
+
+    def test_self_describing_kinds_add_nothing(self):
+        """An HTTP code is the whole story, and its repr carries the URL —
+        this line is what users paste into public issues."""
+        err = TestClassifyUsageError._http_error(429)
+        kind, detail = self._detail(err)
+        assert kind == "http-429"
+        assert detail is None
+        assert self._detail(TimeoutError())[1] is None
+
+    def test_the_fallback_kind_is_not_repeated_in_its_own_detail(self):
+        kind, detail = self._detail(ValueError("boom"))
+        assert kind == "ValueError"
+        assert detail == "boom"
+
+    def test_detail_is_bounded(self):
+        """A flapping link must not fill a 1MB rotating log."""
+        _, detail = self._detail(urllib.error.URLError(OSError("x" * 5000)))
+        assert len(detail) <= oauth._FAILURE_DETAIL_MAX
+
+    def test_newlines_cannot_break_the_line_format(self):
+        _, detail = self._detail(urllib.error.URLError(OSError("a\nb\n  c")))
+        assert "\n" not in detail
+        assert detail.endswith("a b c")
+
+    def test_the_warning_line_carries_it(self, caplog):
+        with caplog.at_level(logging.WARNING, logger="claude-swap"):
+            oauth._log_usage_failure(
+                "for account 1",
+                urllib.error.URLError(ConnectionResetError(104, "Connection reset")),
+                "network",
+            )
+        line = caplog.text
+        assert "Usage fetch failed for account 1: network" in line
+        assert "ConnectionResetError" in line
+        # Never the email: this line is pasted into public issues.
+        assert "@" not in line
+
+    def test_retry_after_still_rides_along(self, caplog):
+        with caplog.at_level(logging.WARNING, logger="claude-swap"):
+            oauth._log_usage_failure(
+                "for account 2", TestClassifyUsageError._http_error(429), "http-429", 3600.0
+            )
+        assert "retry-after 3600s" in caplog.text
