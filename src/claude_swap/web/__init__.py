@@ -1,8 +1,8 @@
 """Browser dashboard for claude-swap.
 
 Entry point for ``cswap web``. The HTTP layer lives in :mod:`.server` and is
-imported lazily inside :func:`run`, so the plain CLI paths — ``cswap list``,
-cron's ``cswap auto --once`` — never pay for ``http.server`` or the frontend
+imported lazily inside :func:`run`, so the plain CLI paths -- ``cswap list``,
+cron's ``cswap auto --once`` -- never pay for ``http.server`` or the frontend
 stat, exactly as the TUI keeps textual out of those paths.
 
 The dashboard is a *shell* over the same supported hooks the TUI uses

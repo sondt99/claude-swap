@@ -124,7 +124,7 @@ def autoswitch_pause_file() -> Path:
         protected root, but its cheap-reject prefilter keys on path hints and
         would not have recognised a novel ``.cswap-*`` name directly in
         ``$HOME``. A test that leaked a write there would have created this
-        file in a real home and silently disabled a live engine — no error,
+        file in a real home and silently disabled a live engine -- no error,
         nothing in pytest output, and no command that reports it.
 
     The cross-container case still works: compose mounts the home at its

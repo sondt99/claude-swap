@@ -8,7 +8,7 @@
 # source is what makes the image reproducible and the host free of any cswap
 # install at all.
 #
-# The credential store still lives on the host and is still bind-mounted — only
+# The credential store still lives on the host and is still bind-mounted -- only
 # the *code* moved into the image.
 #
 # Build context is the REPOSITORY ROOT, not deploy/ (see docker-compose.yml),
@@ -44,7 +44,7 @@ RUN uv sync --locked --no-dev --no-editable
 
 FROM python:3.12-slim
 
-# CA certificates matter enormously here — claude-swap reaches
+# CA certificates matter enormously here -- claude-swap reaches
 # api.anthropic.com over TLS, and without a bundle every usage fetch fails as
 # CERTIFICATE_VERIFY_FAILED, which cswap reports as a generic "network" error;
 # the store then serves stale usage and the engine switches late. (Measured on

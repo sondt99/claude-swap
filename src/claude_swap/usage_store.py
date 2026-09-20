@@ -115,7 +115,7 @@ BACKOFF_CAP_S = 600.0
 # Responses the usage endpoint uses to SHED LOAD, as opposed to a fault. 429 is
 # the documented one. 403 was measured into this set 2026-09-18: over a month
 # of logs on a 3-account org there was not one http-403; ~18h after a 4th
-# account joined (33 req/hour against the ~28-30 cap — see poll_policy's "ONE
+# account joined (33 req/hour against the ~28-30 cap -- see poll_policy's "ONE
 # BUDGET, N ACCOUNTS") 403s appeared for ALL FOUR accounts, interleaved with
 # 429s in the same minutes, and the same token+UA that had just drawn 403s
 # returned 200 the instant its sibling 429 block lapsed. A permission error
@@ -123,7 +123,7 @@ BACKOFF_CAP_S = 600.0
 # traffic as either code.
 #
 # Why the set matters more than the label: a throttle that lands in the
-# GENERIC failure path re-probes on the BACKOFF_CAP_S curve — 600s. Three
+# GENERIC failure path re-probes on the BACKOFF_CAP_S curve -- 600s. Three
 # throttled accounts on that curve is 18 requests/hour spent to learn nothing,
 # which alone holds a saturated org at its cap. Measured: that loop ran 18
 # hours without recovering, retrying at exactly 10-minute spacing throughout.
@@ -132,7 +132,7 @@ THROTTLE_ERRORS = frozenset({"http-429", "http-403"})
 # Retry cap for a throttle carrying no Retry-After, before the peer divisor.
 # Deliberately under TRUST_MAX_AGE_S (3600): a row must never be parked longer
 # than its own last_good stays trusted, or it is un-pollable and unknown at the
-# same time — the blind state `_failure_backoff_s`'s PARK BOUND exists to
+# same time -- the blind state `_failure_backoff_s`'s PARK BOUND exists to
 # bound, and the one autoswitch reads as failover pressure.
 THROTTLE_BACKOFF_CAP_S = 1800.0
 # Exponent clamp: a permanently failing account increments its failure count
@@ -558,8 +558,8 @@ def _throttle_curve_cap(rate_limited: bool, share: float) -> float:
 
     A fault (timeout, network) keeps the plain ``BACKOFF_CAP_S``: it costs the
     budget nothing to retry and the user wants it back quickly. A THROTTLE is
-    the opposite — each probe is itself a request in the trailing hour it is
-    waiting out — so its ceiling is divided among the accounts sharing the
+    the opposite -- each probe is itself a request in the trailing hour it is
+    waiting out -- so its ceiling is divided among the accounts sharing the
     budget, exactly as ``poll_policy`` divides the success cadence.
     """
     if not rate_limited:
@@ -596,7 +596,7 @@ def _failure_backoff_s(
             # the plain exponential curve, same as no header at all.
             return computed
         # Saturated-budget edge: wait before probing again. Clamped to the
-        # same peer-divided ceiling as the curve above — at the edge, freed
+        # same peer-divided ceiling as the curve above -- at the edge, freed
         # capacity has to outpace the probing of EVERY account sharing the
         # budget, not just this one.
         return min(max(computed, EDGE_BACKOFF_S), curve_cap)
@@ -955,7 +955,7 @@ class UsageStore:
             # trust bridge up: when another collector just won the fetch, this
             # reader must not flip trusted → unknown (and e.g. count an
             # unhealthy tick) for the seconds the result is in flight.
-            # A usage-endpoint THROTTLE (429 or 403 — see THROTTLE_ERRORS)
+            # A usage-endpoint THROTTLE (429 or 403 -- see THROTTLE_ERRORS)
             # sheds polling without moving the account's real windows. Usage is
             # monotone within a window, so last_good is a valid lower bound
             # until that window resets: trust it right up to the earliest
@@ -1127,7 +1127,7 @@ class UsageStore:
             live view but can be a single slot (``cswap --status``), and the
             stored rows remember every slot this machine polls. Taking only the
             caller's view would let a single-slot command write a backoff sized
-            for a lone account onto a row that is in fact one of four — the
+            for a lone account onto a row that is in fact one of four -- the
             exact under-division that kept the budget saturated.
             """
             org = identities.get(num, ("", ""))[1]
@@ -1173,7 +1173,7 @@ class UsageStore:
                     # Kept across later successes: the poll planner floors the
                     # cadence while a throttle is recent (see
                     # UsageEntry.last_429_at). The FIELD NAME stays `last429At`
-                    # — it is persisted state read by older builds, and a 403
+                    # -- it is persisted state read by older builds, and a 403
                     # is the same signal under a different code.
                     row["last429At"] = now
                 row["backoffUntil"] = now + _failure_backoff_s(

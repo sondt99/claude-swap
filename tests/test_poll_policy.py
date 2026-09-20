@@ -517,7 +517,7 @@ class TestTheActiveRowCannotCrossTheBandUnobserved:
         assert burned < poll_policy.ESCALATION_MARGIN_PCT, (
             f"peers={peers}: an active row burns {burned:.1f} points between "
             f"polls but the band is only {poll_policy.ESCALATION_MARGIN_PCT} "
-            f"wide — it can cross the band unobserved and urgent mode will "
+            f"wide -- it can cross the band unobserved and urgent mode will "
             f"never arm, which is the 2026-09-18 miss"
         )
 
@@ -569,7 +569,7 @@ class TestTheActiveRowCannotCrossTheBandUnobserved:
 
 
 class TestTheBudgetStaysInsideWhatWasMeasured:
-    """The rate is a deliberate, documented number — not "whatever comes out".
+    """The rate is a deliberate, documented number -- not "whatever comes out".
 
     It is NOT rate-neutral against the even split any more: the operator chose
     to spend reserve for a 3-minute active cadence (2026-09-18). What must hold
@@ -595,14 +595,14 @@ class TestTheBudgetStaysInsideWhatWasMeasured:
 
     def test_the_active_row_gets_the_fastest_cadence_the_store_permits(self):
         """What the operator actually asked for, and why 2 minutes was refused:
-        SERVE_TTL_S is the floor — anything fresher is served from the store
+        SERVE_TTL_S is the floor -- anything fresher is served from the store
         without a request, so no setting can poll faster than this."""
         assert poll_policy.active_interval_s(4) == poll_policy.SERVE_TTL_S
         assert poll_policy.ACTIVE_FAST_LANE_S == poll_policy.SERVE_TTL_S
 
     @pytest.mark.parametrize("peers", [1, 2, 3, 4, 6, 8, 12])
     def test_the_summed_floor_rate_stays_under_the_measured_cap(self, peers):
-        """Every row at its FLOOR — the worst case, all of them moving."""
+        """Every row at its FLOOR -- the worst case, all of them moving."""
         _, active = _plan(is_active=True, peers=peers, prev_usage=_usage(10),
                           new_usage=_usage(30))
         _, candidate = _plan(is_active=False, peers=peers, prev_usage=_usage(10),

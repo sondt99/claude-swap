@@ -24,7 +24,7 @@ x-common: &common
   environment:
     HOME: "${HOST_HOME}"
     TZ: "${TZ:-UTC}"
-    # Without this, Python block-buffers stdout whenever it is a pipe — which
+    # Without this, Python block-buffers stdout whenever it is a pipe -- which
     # it always is under Docker. `cswap auto` then logs nothing for hours and
     # the engine looks dead while it is in fact switching accounts normally.
     # (Diagnosed 2026-09-01: last visible log line was three days stale while
@@ -32,7 +32,7 @@ x-common: &common
     PYTHONUNBUFFERED: "1"
     # Cadence for the tick loop. autoswitch.intervalSeconds does NOT apply
     # here: `cswap auto --once` evaluates once and returns, so the interval
-    # belongs to whatever drives it — this.
+    # belongs to whatever drives it -- this.
     CSWAP_TICK_S: "${CSWAP_TICK_S:-15}"
   volumes:
     - "${HOST_HOME:?set HOST_HOME in deploy/.env}:${HOST_HOME}"
@@ -48,8 +48,8 @@ x-common: &common
   cap_drop:
     - ALL
   # Neither service writes to the rootfs; everything lands in the mounted home.
-  # /tmp still has to exist and be writable — plenty of stdlib paths assume it
-  # — so it is a tmpfs rather than a writable image layer.
+  # /tmp still has to exist and be writable -- plenty of stdlib paths assume it
+  # -- so it is a tmpfs rather than a writable image layer.
   read_only: true
   tmpfs:
     - /tmp
@@ -78,7 +78,7 @@ services:
       # wholesale rather than merging it, so anything this block does not
       # restate is dropped for this service alone.
       PYTHONUNBUFFERED: "1"
-      # No token: http://127.0.0.1:8787/ opens straight up. Deliberate —
+      # No token: http://127.0.0.1:8787/ opens straight up. Deliberate --
       # loopback bind, Origin check and Host pin still block anything coming
       # through a browser; what this concedes is that any *local* process can
       # POST a switch. Set to 0 (and use CSWAP_WEB_TOKEN below) to re-enable.
@@ -86,7 +86,7 @@ services:
       # Kept for when auth is turned back on: a stable token means the
       # bookmark survives a restart (value in .env).
       CSWAP_WEB_TOKEN: "${CSWAP_WEB_TOKEN}"
-    # Published to loopback only — never 0.0.0.0. The server binds 0.0.0.0
+    # Published to loopback only -- never 0.0.0.0. The server binds 0.0.0.0
     # *inside* the container so this publish can reach it; the host-side
     # 127.0.0.1 is what actually limits exposure.
     ports:
@@ -105,12 +105,12 @@ services:
     <<: *common
     container_name: cswap-auto
     depends_on:
-      # Start order only. This does NOT order builds — compose builds before it
-      # starts anything — and `auto` has no build: to order anyway. Kept so the
+      # Start order only. This does NOT order builds -- compose builds before it
+      # starts anything -- and `auto` has no build: to order anyway. Kept so the
       # dashboard is up by the time the first tick logs.
       - web
     # The autoswitch engine, driven by our own tick loop rather than `cswap
-    # auto`'s built-in one — see autoswitch-loop.sh for why (settings.json is
+    # auto`'s built-in one -- see autoswitch-loop.sh for why (settings.json is
     # re-read every tick instead of once at startup).
     command: ["/usr/local/bin/autoswitch-loop.sh"]
     # Asserts the engine is TICKING, not merely that a process exists: the loop

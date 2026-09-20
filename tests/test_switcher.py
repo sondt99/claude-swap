@@ -1821,7 +1821,7 @@ class TestListAccountsUsage:
     ):
         """The post-switch replan is a SECOND writer of pollIntervalS. Writing
         the bare MIN_INTERVAL_S here would reset a correctly-widened plan to
-        180s on every switch — on a 4-account org, one slot spending the whole
+        180s on every switch -- on a 4-account org, one slot spending the whole
         org's budget, which is the saturation this scaling exists to end."""
         import time as time_mod
 

@@ -446,7 +446,7 @@ def _failure_detail(e: Exception, kind: str) -> str | None:
 
     ``http-429`` and friends carry their own meaning; ``network`` does not,
     and it was the one that needed it. Measured 2026-09-19: three accounts
-    logged bare ``network`` for 51 minutes, and the log held nothing else —
+    logged bare ``network`` for 51 minutes, and the log held nothing else --
     the transport probe the banner suggests came back HTTP 401 (fine), so the
     line named a kind nobody could act on.
 
@@ -492,7 +492,7 @@ def _log_usage_failure(
     The underlying reason rides on this line too, and must: the DEBUG line
     below never reaches anywhere. ``logging_config`` puts the file handler at
     DEBUG but leaves the LOGGER at INFO unless ``--debug``, and a logger drops
-    a record before any handler sees it — so the file has never held one DEBUG
+    a record before any handler sees it -- so the file has never held one DEBUG
     line. Lowering the logger is not the fix either: ``build_usage_result``
     debug-logs the entire usage payload on every fetch, which would fill a 1MB
     rotating log in minutes.

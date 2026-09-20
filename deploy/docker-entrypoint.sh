@@ -12,7 +12,7 @@ if [ ! -x "${VENV}/cswap" ]; then
   exit 1
 fi
 
-# Importability is not what the CMDs need — both invoke the console script, and
+# Importability is not what the CMDs need -- both invoke the console script, and
 # a venv that imports the package but has no working script would otherwise
 # fail on every tick, silently, because the loop swallows it.
 if ! "${VENV}/cswap" --version >/dev/null 2>&1; then

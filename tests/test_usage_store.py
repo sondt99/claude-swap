@@ -1708,7 +1708,7 @@ class TestAThrottleIsNotAFault:
     Measured 2026-09-18: zero 403s in a month on a 3-account org; ~18h after a
     4th account joined, 403s hit all four, interleaved with 429s, and a token
     that had just drawn 403s returned 200 the instant its sibling 429 block
-    lapsed. Routed as a generic fault it re-probed on the 600s curve — three
+    lapsed. Routed as a generic fault it re-probed on the 600s curve -- three
     accounts doing that is 18 requests/hour that alone held the org at its cap
     for 18 hours."""
 
@@ -1771,7 +1771,7 @@ class TestAThrottleIsNotAFault:
         self, tmp_path, clock
     ):
         # Division alone would put a 4-account org at 2400s and a 12-account
-        # one at 7200s — past the trust window, i.e. blind. The clamp binds
+        # one at 7200s -- past the trust window, i.e. blind. The clamp binds
         # first, and the divisor never reaches past it.
         assert self._park(tmp_path / "c", clock, ORG_IDENT) == THROTTLE_BACKOFF_CAP_S
         assert THROTTLE_BACKOFF_CAP_S < TRUST_MAX_AGE_S

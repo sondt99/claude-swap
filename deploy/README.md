@@ -1,4 +1,4 @@
-# deploy — always-on cswap
+# deploy -- always-on cswap
 
 The browser dashboard (`cswap web`) plus an always-on autoswitch engine, as two
 containers.
@@ -9,14 +9,14 @@ deployment wrapper.
 
 **Both containers run claude-swap built into the image**, from the source tree
 in this repo. Nothing is taken from the host except the credential store, which
-is bind-mounted — so claude-swap does not need to be installed on the host at
+is bind-mounted -- so claude-swap does not need to be installed on the host at
 all, and `docker compose up` can never pick up whatever version happened to be
 sitting there.
 
 Python dependencies come from `uv.lock` (`uv sync --locked`, 67 hashes), so the
 dependency set is pinned rather than resolved fresh from PyPI at build time.
 The base image and uv are pinned by *tag*, not digest, so two builds months
-apart can still differ in interpreter patch level and OS packages — the
+apart can still differ in interpreter patch level and OS packages -- the
 dependency set is reproducible, the whole image is not.
 
 ## Setup
@@ -27,8 +27,8 @@ cd claude-swap/deploy
 ./setup.sh
 ```
 
-`setup.sh` derives everything from the machine it runs on — uid, gid, home path,
-system timezone — generates a dashboard token, writes `.env` at mode 600,
+`setup.sh` derives everything from the machine it runs on -- uid, gid, home path,
+system timezone -- generates a dashboard token, writes `.env` at mode 600,
 installs the host `cswap` shim, builds the image from source and starts the
 stack. Nothing to fill in by hand, so the same clone behaves identically on any
 machine and for any user.
@@ -40,7 +40,7 @@ When it finishes the dashboard is at:
 
     http://127.0.0.1:8787/
 
-No token, no login — `CSWAP_WEB_NO_AUTH: "1"` in `docker-compose.yml`. See
+No token, no login -- `CSWAP_WEB_NO_AUTH: "1"` in `docker-compose.yml`. See
 [Security](#security) for exactly what that does and does not give up, and how
 to turn auth back on.
 
@@ -57,7 +57,7 @@ Source changes need `--build`; there is no host install to refresh.
 ### The `cswap` command
 
 `setup.sh` links it for you. The CLI lives in the image, and `deploy/cswap-host`
-routes it into the running container — which has the store mounted at its real
+routes it into the running container -- which has the store mounted at its real
 path and runs as your uid, so what it writes is indistinguishable from a host
 install's output. To link it by hand:
 
@@ -68,7 +68,7 @@ cswap list
 
 ## Moving to a new machine
 
-The image is disposable — it is rebuilt from this repo. What is *not* in the
+The image is disposable -- it is rebuilt from this repo. What is *not* in the
 repo, and not recoverable without a backup, is the **credential store**: the
 accounts live on the host under `${XDG_DATA_HOME:-~/.local/share}/claude-swap/`,
 deliberately outside the image, so destroying every container and image can
@@ -89,7 +89,7 @@ cswap import ~/cswap-backup.cswap
 ```
 
 Two things worth knowing about that file. It is **plaintext JSON** carrying OAuth
-refresh tokens — treat it exactly like a password, and encrypt it if it leaves
+refresh tokens -- treat it exactly like a password, and encrypt it if it leaves
 the machine (`cswap export - | gpg -c > backup.gpg`). And by default it carries
 only each account's own login; machine-shared MCP/plugin OAuth state and the
 device token stay behind. `--full` includes those, which is what you want for a
@@ -112,7 +112,7 @@ account, so most ticks are free.
 
 In the UI: switch to a slot, rotate, next-available, switch-to-best,
 enable/disable, set alias. **Not** in the UI: `cswap add` (needs the interactive
-OAuth login — it still works through the shim, since it captures the already
+OAuth login -- it still works through the shim, since it captures the already
 logged-in host credentials rather than opening a browser flow).
 
 `cswap run` does **not** work in this deployment at all: it execs the `claude`
@@ -133,7 +133,7 @@ install. The shim restores those.
 
 ## Autoswitch
 
-Configured on the host, in the shared `settings.json`. No restart needed — the
+Configured on the host, in the shared `settings.json`. No restart needed -- the
 tick loop runs a fresh `cswap auto --once` each time, so settings are re-read
 every tick:
 
@@ -142,7 +142,7 @@ every tick:
     cswap config set autoswitch.hysteresisPct 5
 
 (`cswap auto`'s own loop reads settings *once at startup*, which is why
-`autoswitch-loop.sh` replaces it — see that file.)
+`autoswitch-loop.sh` replaces it -- see that file.)
 
 **`autoswitch.intervalSeconds` does nothing here.** `cswap auto --once`
 evaluates once and returns without consulting it; only the built-in loop reads
@@ -170,7 +170,7 @@ setting the tick re-reads).
 
 Only 1 (and anything unexpected) counts as a failure. The loop gives up after
 `CSWAP_MAX_FAILS` consecutive failures and exits non-zero so the restart policy
-can act — previously every failure was swallowed and a permanently broken loop
+can act -- previously every failure was swallowed and a permanently broken loop
 still reported the container as healthy.
 
 ### Pause
@@ -179,7 +179,7 @@ The **Auto: ON / OFF** button in the dashboard holds the engine off so a
 hand-picked account stays active. It works by touching `.paused` in the backup
 root; `cswap auto` consults it every tick, before polling. A file rather than an
 in-process flag because the dashboard and the engine can be different
-containers — both see it through the shared home mount.
+containers -- both see it through the shared home mount.
 
 It lives in the backup root, not `$HOME`, so it is scoped per profile
 (`XDG_DATA_HOME`) rather than pausing every profile on the box. Equivalent from
@@ -189,7 +189,7 @@ a shell:
     rm    "${XDG_DATA_HOME:-$HOME/.local/share}/claude-swap/.paused"   # resume
 
 (An earlier version used `~/.cswap-web-paused`. That path is no longer read by
-anything — touching it pauses nothing.)
+anything -- touching it pauses nothing.)
 
 While paused you have **no rate-limit protection**, so the dashboard shows a
 standing amber banner rather than a quiet toggle state.
@@ -197,7 +197,7 @@ standing amber banner rather than a quiet toggle state.
 ### Why one threshold governs two very different windows
 
 `threshold` binds on `max(5h, 7d)`, and those two move at completely different
-speeds — the 5h window at ~1.6 %/min under load, the weekly one over days. A
+speeds -- the 5h window at ~1.6 %/min under load, the weekly one over days. A
 threshold low enough to protect the fast window will strand an account whose
 *weekly* number is high even when its 5h window is completely fresh. Seen here:
 account 3 sat at `5h 0% / 7d 80%` and was ejected within seconds of every
@@ -205,12 +205,12 @@ manual selection, because binding 80 ≥ threshold 80.
 
 There is no per-window threshold upstream. The practical resolution is to keep
 the threshold above the highest weekly figure you still want to use, and rely
-on urgent-mode polling (60s) for the 5h margin — at 1.6 %/min that costs about
+on urgent-mode polling (60s) for the 5h margin -- at 1.6 %/min that costs about
 1.6 points of overshoot, so 90 switches at roughly 91.6% worst case.
 
 Three things to know about the threshold:
 
-1. **99.9 is the hard maximum** — `cswap config set autoswitch.threshold 99.99`
+1. **99.9 is the hard maximum** -- `cswap config set autoswitch.threshold 99.99`
    is rejected with "must be between 50 and 99.9".
 2. **It binds on `max(5h, 7d)`**, not on 5h alone. An account at 7d 90% is
    already closer to tripping than its 5h number suggests.
@@ -231,15 +231,15 @@ routing preference that only applies while some account is still healthy. Once
 *every* account is at or above the threshold, `autoswitch.py` flips the goal
 from "most headroom" to "soonest back":
 
-> When NOTHING is below the threshold — the active account and every candidate
-> all in the 90s — "land somewhere healthy" has no answer, and holding out for
+> When NOTHING is below the threshold -- the active account and every candidate
+> all in the 90s -- "land somewhere healthy" has no answer, and holding out for
 > one costs the user the session. Sitting still means burning the active account
 > to 100% and taking a hard limit, with the peer that resets in 8 minutes never
 > tried. So in that state the goal changes from "most headroom" to "soonest
 > back": move to whichever account recovers first and keep working through its
 > reset.
 
-So the reserved margin is spent, not wasted — it is just spent last, and spent
+So the reserved margin is spent, not wasted -- it is just spent last, and spent
 on whichever account's 5h window returns first. Anti-flap in that mode is
 `RECOVERY_HYSTERESIS_S = 300` (not the percentage margin), and
 `SPENT_HEADROOM_PCT = 3.0` is the point below which a headroom edge is treated
@@ -253,7 +253,7 @@ That is broader than it looks like it needs to be, and it is not laziness.
 claude-swap publishes `~/.claude.json` by atomic rename (`switcher._write_json`
 → `fsutil.replace_with_retry` → `os.replace`). Renaming onto a Docker
 **single-file** bind mount fails with `EBUSY`, and that helper only retries
-Windows error codes — so on Linux it raises immediately and the switch dies.
+Windows error codes -- so on Linux it raises immediately and the switch dies.
 Measured:
 
 | Mount style | `os.replace` | Host sees the change |
@@ -268,7 +268,7 @@ help: `os.replace` swaps in a new inode, leaving any hardlink pointing at the
 old one.
 
 The interpreter and every dependency live inside the image, so the
-mount carries data only — the credential store, `settings.json` and
+mount carries data only -- the credential store, `settings.json` and
 `~/.claude.json`. Nothing executable is read from the host.
 
 **The tradeoff is real**: these containers get read-write access to your entire
@@ -280,7 +280,7 @@ whole job is mutating host credential files. If that bothers you, plain
 ## Troubleshooting: "the engine looks dead"
 
 If `docker logs cswap-auto` shows nothing recent, check whether it is really
-idle before concluding anything — Python block-buffers stdout whenever it is a
+idle before concluding anything -- Python block-buffers stdout whenever it is a
 pipe, which under Docker it always is. Seen here: the last visible log line was
 **three days old** while `autoswitch_state.json` recorded a switch minutes
 earlier. The engine was fine; only its output was stuck in a buffer.
@@ -295,7 +295,7 @@ independently of logs:
 
 Symptom: an account hits its 5h limit and the engine only reacts minutes later.
 The engine ticks every `CSWAP_TICK_S`, but it decides on whatever the usage
-store last managed to *fetch* — so the real question is data freshness, not tick
+store last managed to *fetch* -- so the real question is data freshness, not tick
 rate. Check it:
 
     python3 -c "
@@ -308,7 +308,7 @@ serving stale data behind a backoff.
 
 **The cause seen here was a missing CA bundle in the image.** The image was
 then based on `debian:12-slim`, which ships without `ca-certificates`, so every
-HTTPS call to `api.anthropic.com` died with `CERTIFICATE_VERIFY_FAILED` — which cswap logs as a generic
+HTTPS call to `api.anthropic.com` died with `CERTIFICATE_VERIFY_FAILED` -- which cswap logs as a generic
 `network` error, giving no hint that TLS trust is the problem. Fetch failures
 went from ~2/hour to ~31/hour and usage aged to ~20 minutes. The Dockerfile now
 installs `ca-certificates`; don't remove it. To confirm TLS from inside a
@@ -317,7 +317,7 @@ container:
     docker exec cswap-auto /usr/local/bin/docker-entrypoint.sh python -c \
       "import urllib.request;urllib.request.urlopen('https://api.anthropic.com/v1/models',timeout=10)"
 
-`HTTP 401` is the healthy answer — it means TLS completed and the API answered.
+`HTTP 401` is the healthy answer -- it means TLS completed and the API answered.
 `CERTIFICATE_VERIFY_FAILED` means the CA bundle is missing.
 
 ### How fresh can it get?
@@ -342,7 +342,7 @@ below 100: the margin covers the polling blind spot.
 | `docker-compose.yml` | `web` (dashboard) + `auto` (autoswitch engine) |
 | `.env.example` | template; copy to `.env` and fill in |
 | `cswap-host` | host shim: routes `cswap` into the running container |
-| `.env` | uid/gid/home/TZ + the dashboard token — **mode 600, gitignored** |
+| `.env` | uid/gid/home/TZ + the dashboard token -- **mode 600, gitignored** |
 
 The dashboard itself lives in the package, not here:
 
@@ -375,7 +375,7 @@ on this machine can do:
 
     curl -X POST 127.0.0.1:8787/api/switch -d '{"identifier":"1"}'
 
-No `Origin`, no cookie, no credentials needed — and it will switch the account.
+No `Origin`, no cookie, no credentials needed -- and it will switch the account.
 On a machine that runs untrusted binaries (malware samples, CTF challenges,
 target apps under analysis) that is a real surface, not a theoretical one.
 

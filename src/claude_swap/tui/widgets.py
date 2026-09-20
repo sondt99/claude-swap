@@ -24,7 +24,7 @@ from claude_swap.tui.theme import Palette
 
 
 def stale_measurement(usage) -> bool:
-    """Whether a reading is old enough to dim — and not old BY DESIGN.
+    """Whether a reading is old enough to dim -- and not old BY DESIGN.
 
     ``STALE_OK_S`` on its own drifted: poll_policy scales every cadence by the
     accounts sharing the org's request budget, so at four accounts a correct
@@ -33,7 +33,7 @@ def stale_measurement(usage) -> bool:
 
     ``trust_extended`` is the store's own "this staleness is scheduler-chosen"
     flag (``now < nextPollAt``), which is what the engine's decision path
-    already keys on — so reusing it here is what keeps the three surfaces from
+    already keys on -- so reusing it here is what keeps the three surfaces from
     drifting apart again as the cadence changes.
     """
     return (

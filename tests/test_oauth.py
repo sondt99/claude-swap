@@ -1529,7 +1529,7 @@ class TestFailureDetailReachesTheLog:
     """`network` on its own is not actionable, and it was all there was.
 
     Measured 2026-09-19: three accounts logged bare `network` for 51 minutes
-    and the log held nothing else to go on — the transport probe the dashboard
+    and the log held nothing else to go on -- the transport probe the dashboard
     banner suggests came back HTTP 401, i.e. fine. The reason had been sent to
     a DEBUG line that cannot arrive: logging_config puts the FILE HANDLER at
     DEBUG but leaves the LOGGER at INFO unless --debug, and a logger drops a
@@ -1550,7 +1550,7 @@ class TestFailureDetailReachesTheLog:
         assert "Connection refused" in detail
 
     def test_dns_and_tls_are_distinguishable(self):
-        """The two causes the banner's own hint tells a reader to tell apart —
+        """The two causes the banner's own hint tells a reader to tell apart --
         now available without running the probe."""
         import socket as _socket
         import ssl as _ssl
@@ -1566,7 +1566,7 @@ class TestFailureDetailReachesTheLog:
         assert dns != tls
 
     def test_self_describing_kinds_add_nothing(self):
-        """An HTTP code is the whole story, and its repr carries the URL —
+        """An HTTP code is the whole story, and its repr carries the URL --
         this line is what users paste into public issues."""
         err = TestClassifyUsageError._http_error(429)
         kind, detail = self._detail(err)

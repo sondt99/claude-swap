@@ -21,12 +21,12 @@ def _parse_version(v: str) -> tuple:
 
     A PEP 440 local version (``0.26.0b1+web.1``, what a self-built fork
     carries) or a pre-release suffix used to raise ValueError here, and the
-    caller swallows that — so the builds most likely to be behind were the ones
+    caller swallows that -- so the builds most likely to be behind were the ones
     permanently told nothing.
 
     The trailing flag matters as much as the numbers: without it a pre-release
     compares EQUAL to its own final, so someone on ``0.26.0b1`` would never be
-    told that ``0.26.0`` had shipped — the exact case this is meant to fix.
+    told that ``0.26.0`` had shipped -- the exact case this is meant to fix.
     """
     release = v.split("+", 1)[0]
     parts: list[int] = []

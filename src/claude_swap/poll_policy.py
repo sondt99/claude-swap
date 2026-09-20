@@ -26,14 +26,14 @@ tokens for one account may share one budget, which is what
 
 ONE BUDGET, N ACCOUNTS. Every constant below sizes ONE account's cadence, but
 the budget they are sized against belongs to the *identity*, and under the
-fixed-deadline regime that identity is the account/org — so N accounts in one
+fixed-deadline regime that identity is the account/org -- so N accounts in one
 organization draw on ONE budget, not N. Their rates ADD. Measured here
 2026-09-18 on a 4-account org, from the store's own persisted intervals
 (600/450/270/600s):
 
     3600/600 + 3600/450 + 3600/270 + 3600/600  =  33 requests/hour
 
-against the ~28-30/hour cap — permanently over. The same store with 3 accounts
+against the ~28-30/hour cap -- permanently over. The same store with 3 accounts
 had run a month with zero 429s (27/hour, just under), and the first http-403
 in that month's log landed ~18h after the 4th account was added. Saturation
 then became self-sustaining: three accounts failing, each re-probing on the
@@ -47,7 +47,7 @@ rather than of each account. At peers=1 the scale is 1.0 and nothing moves.
 
 This is scope-conservative by design. Whether the shared counter is really the
 org or the egress IP (Cloudflare fronts the endpoint, and every collector on
-one machine shares an IP) was NOT separable from the evidence above — both
+one machine shares an IP) was NOT separable from the evidence above -- both
 predict exactly what was measured, and both are fixed by dividing the rate.
 What would tell them apart is two machines on different networks holding the
 same org's accounts; until someone measures that, treat the divisor as sound
@@ -125,7 +125,7 @@ CANDIDATE_MAX_INTERVAL_S = 600.0
 # Every interval above is one account's share of a budget that belongs to the
 # org (see "ONE BUDGET, N ACCOUNTS" in the module docstring), so each is
 # widened by the number of accounts drawing on it. Clamped at
-# POST_429_MAX_INTERVAL_S — the widest cadence this module ever intends — so a
+# POST_429_MAX_INTERVAL_S -- the widest cadence this module ever intends -- so a
 # large org can never plan a poll so far out that the row ages into "unknown"
 # (usage_store.TRUST_MAX_AGE_S, 3600s) purely from cadence, which would hand
 # the engine an unknown-usage account to fail over from.
@@ -148,7 +148,7 @@ def budget_share(peers: int) -> float:
 #
 # Only the ACTIVE row can burn quota minute to minute, and its number is what
 # arms autoswitch's Phase-B refetch of every candidate. Candidates therefore do
-# not need a continuous fast cadence — they need to be right at the moment a
+# not need a continuous fast cadence -- they need to be right at the moment a
 # switch is considered, which Phase B already guarantees by refetching them all
 # before deciding. So the active row gets a fast lane and the candidates absorb
 # the widening, at the SAME total request rate.
@@ -162,7 +162,7 @@ def budget_share(peers: int) -> float:
 # 26 is not a guess against the cap. This module's own measurements: three
 # accounts ran a MONTH at 27/hour with zero 429s, and the episode that broke
 # was 33/hour. 26 sits below the figure that is proven clean and well under the
-# one that failed. What it does cost is reserve — about 2/hour — so urgent mode
+# one that failed. What it does cost is reserve -- about 2/hour -- so urgent mode
 # and manual commands have little room. Urgent mode does not need any here:
 # at an active plan of SERVE_TTL_S it is already slower than the normal
 # cadence. Phase-B escalation still overspends while the band is armed, which
@@ -176,17 +176,17 @@ ORG_TARGET_PER_HOUR = 26.0
 # mode arms only on a poll that LANDS inside the escalation band, so a row that
 # can cross the whole band between two polls can never be observed inside it.
 # The band is ESCALATION_MARGIN_PCT wide, so this cadence is what bounds the
-# burn rate the band can still catch — ``band_covers_pct_per_min`` states it,
+# burn rate the band can still catch -- ``band_covers_pct_per_min`` states it,
 # and a test pins it.
 #
 # Set to SERVE_TTL_S, the fastest any single account may be polled at all: the
 # operator asked for the shortest quota check the system can give the row that
 # is actually burning (2026-09-18). 180s covers 5 %/min, nearly double the
 # 2.56 %/min that caused the missed switch, and it is a floor rather than a
-# choice — the store serves anything fresher from cache without a request, so
+# choice -- the store serves anything fresher from cache without a request, so
 # no setting can go below it. A consequence worth knowing: at this cadence
 # URGENT_INTERVAL_S (240s at four peers) is *slower* than the normal plan, so
-# urgent mode stops being the thing that saves a fast burn — the floor is.
+# urgent mode stops being the thing that saves a fast burn -- the floor is.
 # 300s was the previous value and remains the right one if the reserve matters
 # more than the active row's freshness; it puts candidates at 15 min instead
 # of 30.
@@ -218,13 +218,13 @@ def active_interval_s(peers: int) -> float:
 
     The fast lane is not unconditional, and a test pins why. Candidates cannot
     widen past ``POST_429_MAX_INTERVAL_S`` (a wider plan would age the row into
-    "unknown" — see ``_scaled``), so beyond a certain peer count they fill the
+    "unknown" -- see ``_scaled``), so beyond a certain peer count they fill the
     target on their own. Granting the active row a fast lane on top of that
     spends more than the even split did: at twelve accounts it measured 34
     requests/hour against a ~28-30 cap, i.e. it would have re-created the very
     429 episode the org split was written to end. Where there is no room, the
     active row falls back to the even split, and the band cannot be widened to
-    compensate — see the comment below ``active_interval_s`` for why.
+    compensate -- see the comment below ``active_interval_s`` for why.
     """
     n = max(1, peers)
     fast = min(MIN_INTERVAL_S * budget_share(n), ACTIVE_FAST_LANE_S)
@@ -242,7 +242,7 @@ def active_interval_s(peers: int) -> float:
 # autoswitch's Phase-B escalation deliberately beats candidate plans, and
 # ``usage_store._row_eligible`` then admits a fetch whenever a row is older
 # than SERVE_TTL_S. So every extra minute spent inside the band costs each
-# candidate a 180s cadence — at four accounts about 75 requests/hour against a
+# candidate a 180s cadence -- at four accounts about 75 requests/hour against a
 # ~28-30 cap. Widening the band buys earlier warning by re-creating the 429
 # episode the org split was written to end. The fast lane is the affordable
 # lever; where even that runs out (see ``active_interval_s``), the honest
@@ -278,7 +278,7 @@ def _scaled(interval_s: float, share: float) -> float:
 
 
 def active_min_interval_s(peers: int) -> float:
-    """The ACTIVE row's cadence floor — what a caller writing an active plan
+    """The ACTIVE row's cadence floor -- what a caller writing an active plan
     outside ``plan_after_fetch`` must use instead of ``MIN_INTERVAL_S``.
 
     Was ``scaled_min_interval_s``, which answered the same question for every
@@ -291,7 +291,7 @@ def active_min_interval_s(peers: int) -> float:
 def active_ceiling_s(peers: int) -> float:
     """The widest cadence an ACTIVE account's plan can carry at this peer
     count. Consumers that test a persisted plan for "too slow to be an active
-    plan" must use this, not ``ACTIVE_MAX_INTERVAL_S`` — at peers>1 a correct
+    plan" must use this, not ``ACTIVE_MAX_INTERVAL_S`` -- at peers>1 a correct
     active plan is legitimately wider than the unscaled constant."""
     return _scaled(ACTIVE_MAX_INTERVAL_S, active_share(peers))
 
@@ -434,7 +434,7 @@ def plan_after_fetch(
     min_interval = _scaled(MIN_INTERVAL_S, share)
     # Urgent mode keeps the EVEN-split price, deliberately. Pricing it on the
     # active share gave 100s at four accounts, which while armed is 36
-    # requests/hour for this row alone — 44 with the candidates, past the
+    # requests/hour for this row alone -- 44 with the candidates, past the
     # measured cap. At the even split it is 240s, which still catches
     # REFERENCE_BURN_PCT_PER_MIN inside the band with room to spare
     # (a test pins that) and totals 23/hour while armed.

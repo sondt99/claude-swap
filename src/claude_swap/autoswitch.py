@@ -720,7 +720,7 @@ class AutoSwitchEngine:
         Persisted rather than held in memory because the engine's supported
         shape is ``cswap auto --once`` on a timer: each tick is a new process,
         so an in-memory episode would restart every 15 seconds and the
-        once-per-episode gate would be a no-op — the same reason cooldown and
+        once-per-episode gate would be a no-op -- the same reason cooldown and
         quarantine live in this file.
 
         Leaving the band clears it, so the next entry is a new episode and
@@ -728,7 +728,7 @@ class AutoSwitchEngine:
         """
         key = "escalationArmedAt"
         # Dry-run's contract is that a tick writes nothing at all, so it gets
-        # no episode and the gate below stays inert — i.e. dry-run keeps the
+        # no episode and the gate below stays inert -- i.e. dry-run keeps the
         # pre-gate behaviour, which is correct for it: it never switches, so
         # over-reading candidates costs a decision nothing.
         if self.dry_run:
@@ -940,7 +940,7 @@ class AutoSwitchEngine:
         #     the whole body froze them, so an engine that had seen 2 of the 3
         #     unhealthy ticks needed for a failover kept that 2 across an
         #     arbitrarily long pause and switched a live credential on the
-        #     first tick after resuming — on evidence that could be days old.
+        #     first tick after resuming -- on evidence that could be days old.
         #     A pause means "stop evaluating", so the evidence is discarded.
         #
         # `dry_run` is exempt: it cannot switch anything, so there is nothing
@@ -2081,7 +2081,7 @@ class AutoSwitchEngine:
         # legitimately wider than ACTIVE_MAX_INTERVAL_S (poll_policy, "ONE
         # BUDGET, N ACCOUNTS"). Testing the bare constant would read every such
         # plan as a leftover candidate plan and re-nominate the active account
-        # on every tick past 300s — spending the very budget the scaling frees.
+        # on every tick past 300s -- spending the very budget the scaling frees.
         active_ceiling = poll_policy.active_ceiling_s(self._budget_peers())
         stale_candidate_plan = (
             active_pre is not None
@@ -2143,7 +2143,7 @@ class AutoSwitchEngine:
             # ONE fresh read per row per EPISODE, not one every SERVE_TTL_S.
             #
             # Escalation passes an explicit fetch set, which makes
-            # `usage_store._row_eligible` answer `poll_due or stale` — stale
+            # `usage_store._row_eligible` answer `poll_due or stale` -- stale
             # being SERVE_TTL_S. So while the band stayed armed, every row
             # refetched every 180s no matter how wide its plan was: 80
             # requests/hour at four accounts against a ~28-30 cap. How long
@@ -2155,7 +2155,7 @@ class AutoSwitchEngine:
             #
             # Phase B's purpose does not need that. It wants the switch
             # decision made on candidate numbers that were read after the band
-            # armed — one read each, then the ordinary plans keep them current
+            # armed -- one read each, then the ordinary plans keep them current
             # (Phase A still fetches a due candidate per tick, and staleness
             # inside a row's own plan stays decision-trusted via
             # `UsageEntry.trust_extended`). So a row already read this episode

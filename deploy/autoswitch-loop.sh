@@ -11,7 +11,7 @@
 #
 # Pausing is NOT handled here. `cswap auto --once` consults the flag itself, so
 # a second implementation in shell would only be a path that could drift out of
-# step with the engine's — which is exactly the split that made the dashboard's
+# step with the engine's -- which is exactly the split that made the dashboard's
 # pause button a no-op for a native `cswap auto`.
 set -u
 
@@ -51,14 +51,14 @@ while true; do
             fails=0
             touch "${HEARTBEAT}" 2>/dev/null || true
             ;;
-        # 1 is the engine's own ERROR — a transient network or lock problem is
+        # 1 is the engine's own ERROR -- a transient network or lock problem is
         # expected here and must not kill the loop, but a permanent one should
         # not masquerade as health either.
         *)
             fails=$((fails + 1))
             echo "$(date +%H:%M:%S)  tick failed (exit ${rc}), ${fails}/${MAX_FAILS} consecutive" >&2
             if [ "${fails}" -ge "${MAX_FAILS}" ]; then
-                echo "$(date +%H:%M:%S)  giving up after ${fails} consecutive failures — exiting so the restart policy can act" >&2
+                echo "$(date +%H:%M:%S)  giving up after ${fails} consecutive failures -- exiting so the restart policy can act" >&2
                 exit 1
             fi
             ;;

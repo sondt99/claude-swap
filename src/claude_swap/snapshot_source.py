@@ -30,7 +30,7 @@ class SnapshotSource:
     ``full=True`` is the user's explicit refresh and now means it: it names
     every account, which lets a row be fetched before its poll plan is due.
     It is still capped by the store's serve TTL, so the fastest it can ever
-    move a row is ``SERVE_TTL_S`` — and the caller still owes it rate
+    move a row is ``SERVE_TTL_S`` -- and the caller still owes it rate
     limiting, because the org's request budget cannot absorb a held-down
     button. It used to be accepted for API stability and do nothing at all,
     which left no way to get fresh numbers on demand: the dashboard's only
