@@ -966,6 +966,29 @@ class TestALapsingLoginIsAnnouncedBeforeItLapses:
 
     def test_the_fork_writes_no_em_dashes(self):
         """Project rule, see CLAUDE.md. Upstream's own em-dashes stay put:
-        rewriting a line upstream also touches is a merge conflict forever."""
-        for name in ("index.html", "server.py"):
-            assert "—" not in (web_server.HERE / name).read_text(), name
+        rewriting a line upstream also touches is a merge conflict forever.
+
+        So this walks the fork-only trees, where the rule is absolute, rather
+        than naming two files. It used to check index.html and server.py only,
+        which left every one of deploy/ unguarded. Shared files (README.md,
+        switcher.py, ...) are mixed and need the diff-based check in CLAUDE.md
+        instead; the root README drifted for exactly that reason, since the
+        earlier sweep skipped it and nothing here could have caught it.
+
+        The dash is spelled as an escape so this file stays clean too, and so
+        grepping the repo for offenders does not match the guard itself.
+        """
+        root = web_server.HERE.parents[2]
+        checked = []
+        for base in (web_server.HERE, root / "deploy"):
+            for path in sorted(base.rglob("*")):
+                if not path.is_file() or "__pycache__" in path.parts:
+                    continue
+                try:
+                    text = path.read_text()
+                except UnicodeDecodeError:
+                    continue  # A binary asset cannot carry prose.
+                assert "\u2014" not in text, path.relative_to(root)
+                checked.append(path)
+        # Guard the guard: a wrong root would make every assert vacuous.
+        assert len(checked) >= 9, [str(c) for c in checked]

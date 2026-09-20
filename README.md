@@ -7,17 +7,17 @@ Multi-account switcher for Claude Code. Easily switch between multiple Claude ac
 ## This fork
 
 A fork of [realiti4/claude-swap](https://github.com/realiti4/claude-swap) that adds a
-**browser dashboard** and runs entirely from source in Docker — nothing is installed
+**browser dashboard** and runs entirely from source in Docker -- nothing is installed
 on the host.
 
 Everything below this section is upstream's documentation and applies unchanged,
 **except** that the installation and uninstall instructions assume a host install
 this fork does not use. Start here instead.
 
-### `cswap web` — browser dashboard
+### `cswap web` -- browser dashboard
 
 A single-page dashboard over the same hooks the TUI uses (`SnapshotSource.take`,
-`run_action`, `usage_to_json`) — no switching, OAuth, or usage logic of its own.
+`run_action`, `usage_to_json`) -- no switching, OAuth, or usage logic of its own.
 Live 5h/7d usage per account, one-click switch/disable/alias, and a slider for the
 auto-switch threshold. It marks the engine's switch line on every meter, so a
 percentage is readable against the number that actually triggers a swap.
@@ -30,12 +30,12 @@ cswap web --port 9000 --no-browser
 Binds loopback only. A per-run token is pinned to a SameSite=Strict cookie; Origin
 and Referer are rejected cross-site, the Host header is pinned against DNS
 rebinding, and no CORS headers are ever emitted. `CSWAP_WEB_NO_AUTH=1` disables the
-token — loopback, Origin and Host checks still apply, but any local process can then
+token -- loopback, Origin and Host checks still apply, but any local process can then
 drive a switch.
 
 ### Always-on deployment (`deploy/`)
 
-Two containers — the dashboard and the autoswitch engine — built from this source
+Two containers -- the dashboard and the autoswitch engine -- built from this source
 tree. The image carries its own interpreter and claude-swap, so **no host install is
 required**; only the credential store is bind-mounted.
 
@@ -64,7 +64,7 @@ uv tool install --force ./dist/claude_swap-*.whl
 
 > **This fork is not published to PyPI.** The `claude-swap` package these commands
 > install is upstream's, without `cswap web` or `deploy/`. To run *this* fork see
-> [This fork](#this-fork) above — either the Docker stack, which needs no host
+> [This fork](#this-fork) above -- either the Docker stack, which needs no host
 > install at all, or `uv build` + `uv tool install ./dist/*.whl` from a clone.
 > The rest of this section is upstream's and is kept verbatim.
 
@@ -284,7 +284,7 @@ The original flag spellings (`cswap --switch`, `cswap --list`, ...) keep working
   preserved instead of being overwritten by a slot's older snapshot
 - Account credentials are stored per platform: the **macOS Keychain** on macOS, and
   **base64-encoded files** (mode `0600`, in a `0700` directory) on Linux/WSL and
-  Windows. Base64 is encoding, not encryption — on those platforms treat the files
+  Windows. Base64 is encoding, not encryption -- on those platforms treat the files
   under `credentials/` as plaintext secrets: readable by any process running as you,
   and worth excluding from backups and cloud sync
 - Switches (manual and automatic) hold Claude Code's own credential locks while writing, so a swap never interleaves with a token refresh
@@ -456,7 +456,7 @@ pipx uninstall claude-swap
 > docker image rm cswap-web:1
 > ```
 >
-> `cswap purge` still needs to run *before* that, while a container is up — it is
+> `cswap purge` still needs to run *before* that, while a container is up -- it is
 > what deletes the credential store.
 
 ## Requirements
