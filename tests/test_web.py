@@ -753,3 +753,99 @@ class TestOnDemandRefresh:
         assert "renderRefreshBudget" in page
         assert "onDemandRemaining" in page
         assert "button.spent" in page
+
+
+class TestAParkedAccountIsNotAStaleMachine:
+    """The banner blamed a sleeping machine for a dead credential.
+
+    Measured 2026-09-20: account 3's refresh token died at 23:56, the row sat
+    9.8 hours stale, and the banner read "Usage data is stale — oldest reading
+    9.7h, and no account is reporting a fetch error. Usually means this machine
+    was asleep or the stack was stopped." The machine had been up ten hours,
+    the engine was ticking, the other three accounts were 0.0-0.3h fresh, and
+    the account's own card said "re-login needed — refresh token dead".
+
+    The hole is structural, not a tuning miss. `usage_store._row_eligible`
+    refuses an auth-dead row on its FIRST check, so no further attempt is made
+    and `consecutiveFailures` freezes at 1 — the `>= 2` test can never see it.
+    """
+
+    @staticmethod
+    def _snap(rows):
+        accounts = [
+            type("A", (), {
+                "number": str(n), "email": f"a{n}@x", "alias": "", "org_name": "",
+                "display_tag": "", "is_active": n == 1, "kind": "oauth",
+                "switchable": True, "disabled": False,
+                "usage": type("U", (), {
+                    "sentinel": sentinel, "age_s": age, "last_error": err,
+                    "consecutive_failures": fails, "poll_interval_s": plan,
+                    "last_good": None,
+                })(),
+            })()
+            for n, (age, plan, err, fails, sentinel) in enumerate(rows, start=1)
+        ]
+        return type(
+            "S", (), {"accounts": accounts, "active_number": "1", "taken_at": 0.0}
+        )()
+
+    def _health(self, rows):
+        return web_server.snapshot_to_json(self._snap(rows))["health"]
+
+    # The live shape: one dead row, three healthy ones.
+    LIVE = [
+        (35145.0, 1800.0, "invalid_grant", 1, "re-login needed"),
+        (60.0, 300.0, None, 0, None),
+        (1140.0, 1800.0, None, 0, None),
+        (1020.0, 1800.0, None, 0, None),
+    ]
+
+    def test_the_dead_row_is_reported_despite_one_failure(self):
+        health = self._health(self.LIVE)
+        assert health["degraded"] is True
+        assert [p["number"] for p in health["parked"]] == ["1"]
+
+    def test_it_does_not_masquerade_as_a_fetch_failure(self):
+        """The failing branch offers a TLS/throttle check, which is useless
+        advice for a dead refresh token."""
+        assert self._health(self.LIVE)["failingCount"] == 0
+
+    def test_the_stale_branch_does_not_quote_the_parked_row(self):
+        """A parked row is stale forever by construction, so quoting its age
+        under "your machine was asleep" is the exact wrong story."""
+        health = self._health(self.LIVE)
+        assert health["maxAgeSeconds"] != 35145.0
+
+    def test_a_healthy_stack_stays_quiet(self):
+        health = self._health([(60.0, 300.0, None, 0, None)] * 4)
+        assert health["degraded"] is False
+        assert health["parked"] == []
+
+    def test_benign_sentinels_are_not_parked(self):
+        """An api-key account has no subscription quota to fetch and an empty
+        slot has nothing to fetch — configurations, not faults. "token
+        expired" is refreshed automatically."""
+        for benign in ("api key", "no credentials", "token expired"):
+            health = self._health([(60.0, 300.0, None, 0, benign)])
+            assert health["parked"] == [], benign
+
+    def test_every_parked_sentinel_is_caught(self):
+        for sentinel in web_server.PARKED_SENTINELS:
+            health = self._health([(60.0, 300.0, None, 0, sentinel)])
+            assert len(health["parked"]) == 1, sentinel
+            assert health["degraded"] is True
+
+    def test_the_row_carries_its_own_instruction(self):
+        """The label already says what to do, so the banner need not invent it."""
+        health = self._health(self.LIVE)
+        assert "cswap add" in health["parked"][0]["label"]
+
+    def test_real_fetch_failures_still_win_their_own_branch(self):
+        health = self._health([(60.0, 300.0, "http-429", 6, None)])
+        assert health["failingCount"] == 1
+        assert health["lastError"] == "http-429"
+
+    def test_the_page_renders_the_parked_branch_first(self):
+        page = (web_server.HERE / "index.html").read_text()
+        assert "h.parked" in page
+        assert page.index("if (parked.length)") < page.index("if (failing)")

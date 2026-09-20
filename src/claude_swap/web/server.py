@@ -43,7 +43,12 @@ from urllib.parse import parse_qs, urlparse
 from claude_swap import __version__ as CSWAP_VERSION
 from claude_swap import paths
 from claude_swap.exceptions import ClaudeSwitchError
-from claude_swap.json_output import usage_to_json
+from claude_swap.json_output import (
+    USAGE_FOREIGN_CREDENTIAL,
+    USAGE_KEYCHAIN_UNAVAILABLE,
+    USAGE_RELOGIN_REQUIRED,
+    usage_to_json,
+)
 from claude_swap.locking import FileLock
 from claude_swap import poll_policy
 from claude_swap.poll_policy import JITTER_FRAC
@@ -190,6 +195,27 @@ STALE_GRACE_FRAC = JITTER_FRAC
 STALE_GRACE_S = 120.0
 
 
+# Sentinels that mean the row is PARKED until a human acts — it is not being
+# retried and will not recover on its own.
+#
+# These are invisible to the `failures >= 2` test below, and not by accident: a
+# row struck as auth-dead is refused by `usage_store._row_eligible` on its very
+# first check, so no further attempt is ever made and `consecutiveFailures`
+# freezes at 1. It can never reach 2. Measured 2026-09-20: account 3's refresh
+# token died at 23:56, the row sat 9.8 hours stale, and the banner reported "no
+# account is reporting a fetch error" and blamed a sleeping machine — while the
+# account's own card, three inches below, read "re-login needed". The machine
+# was fine and had been up ten hours.
+#
+# Deliberately not every sentinel. An api-key account has no subscription quota
+# to fetch and an empty slot has nothing to fetch, which are configurations
+# rather than faults; "token expired" is refreshed automatically. These three
+# are a credential that worked and now does not.
+PARKED_SENTINELS = frozenset(
+    {USAGE_RELOGIN_REQUIRED, USAGE_FOREIGN_CREDENTIAL, USAGE_KEYCHAIN_UNAVAILABLE}
+)
+
+
 def _is_behind_plan(row: dict) -> bool:
     """Whether an account is overdue against the cadence it actually
     scheduled — not against a global guess at one."""
@@ -241,9 +267,22 @@ def set_autoswitch_paused(paused: bool) -> None:
 
 def snapshot_to_json(snap, threshold: float | None = None) -> dict:
     accounts = [account_to_json(a) for a in snap.accounts]
-    ages = [a["ageSeconds"] for a in accounts if a["ageSeconds"] is not None]
     failing = [a for a in accounts if (a["failures"] or 0) >= 2]
-    behind = [a for a in accounts if _is_behind_plan(a)]
+    parked = [a for a in accounts if a["sentinel"] in PARKED_SENTINELS]
+    # Ages exclude parked rows throughout, the fallback below included: such a
+    # row is never fetched again, so its age is unbounded and would dominate
+    # every age this banner quotes — under a message about a stack that stopped.
+    ages = [
+        a["ageSeconds"]
+        for a in accounts
+        if a["ageSeconds"] is not None and a not in parked
+    ]
+    # A parked row is stale by construction and grows staler forever, so it must
+    # not also drive the "data is stale" branch — that branch's message is about
+    # a stack that stopped, and this row is the one thing a restart cannot fix.
+    behind = [
+        a for a in accounts if a not in parked and _is_behind_plan(a)
+    ]
     max_age = max(ages) if ages else None
     return {
         "activeNumber": snap.active_number,
@@ -257,13 +296,21 @@ def snapshot_to_json(snap, threshold: float | None = None) -> dict:
         # tick, so a `cswap config set` has to reach this page the same way.
         "threshold": threshold,
         "health": {
-            "degraded": bool(failing) or bool(behind),
+            "degraded": bool(failing) or bool(behind) or bool(parked),
             "failingCount": len(failing),
+            # Named rows, not a count: the action differs per sentinel and the
+            # label already carries it ("log in with Claude Code, then run:
+            # cswap add"), so the banner can say which slot and what to do.
+            "parked": [
+                {"number": a["number"], "label": a["sentinelLabel"]} for a in parked
+            ],
             # The oldest reading among the rows actually overdue. The plain
             # maximum named whichever row happened to be oldest, which at
             # peers>1 is routinely a row polling dead on schedule — so the
             # banner quoted an age that was evidence of nothing.
-            "maxAgeSeconds": max(a["ageSeconds"] for a in behind) if behind else max_age,
+            "maxAgeSeconds": (
+                max(a["ageSeconds"] for a in behind) if behind else max_age
+            ),
             "lastError": failing[0]["lastError"] if failing else None,
         },
     }

@@ -683,8 +683,27 @@ function renderHealth(h) {
   if (!h || !h.degraded) { el.classList.remove("show"); return; }
   const age = h.maxAgeSeconds != null ? ago(h.maxAgeSeconds) : "?";
   const failing = (h.failingCount || 0) > 0;
+  const parked = h.parked || [];
 
-  el.classList.toggle("warn-only", !failing);
+  el.classList.toggle("warn-only", !failing && !parked.length);
+
+  // Parked rows come FIRST, because they are the only state here that never
+  // clears itself. Neither other message fits one: the failing branch offers a
+  // transport check for a credential problem, and the stale branch blames a
+  // sleeping machine for a row that would still be stale on a machine that
+  // never slept. That is what it did on 2026-09-20 — nine hours of "your
+  // machine was asleep" while the account card read "re-login needed".
+  if (parked.length) {
+    const rows = parked
+      .map((p) => `<b>#${esc(p.number)}</b> — ${esc(p.label || "needs attention")}`)
+      .join("<br>");
+    el.innerHTML =
+      `<b>${parked.length === 1 ? "An account needs" : `${parked.length} accounts need`} ` +
+      `attention.</b> Not a fetch problem and it will not clear on its own — ` +
+      `the slot is out of rotation until its credential is replaced.<br>${rows}`;
+    el.classList.add("show");
+    return;
+  }
 
   if (failing) {
     el.innerHTML =
