@@ -23,35 +23,46 @@ from claude_swap.web import server as web_server
 
 
 class TestParseVersion:
-    """A fork carries a PEP 440 local version; that must not kill the notifier."""
+    """A fork carries a PEP 440 local version; that must not kill the notifier.
 
-    def test_plain_release(self):
-        assert _parse_version("0.25.0") == ((0, 25, 0), 1)
+    Upstream's own suite never feeds one in, so the ``+web.1`` case is ours to
+    hold. These assert ordering rather than the parser's return shape: pinning
+    the exact tuple is what broke this class when upstream reworked
+    _parse_version into a NamedTuple, and the shape was never the point.
+    """
 
     @pytest.mark.parametrize(
-        "raw,expected",
+        "raw,equivalent",
         [
             # The exact string a self-built fork carries. This used to raise
             # ValueError, which check_for_update swallows -- so the builds most
             # likely to be behind were the ones permanently told nothing.
-            ("0.26.0b1+web.1", ((0, 26, 0), 0)),
-            ("0.26.0b1", ((0, 26, 0), 0)),
-            ("1.2.3+local", ((1, 2, 3), 1)),
-            ("1.2.3rc1", ((1, 2, 3), 0)),
+            ("0.26.0b1+web.1", "0.26.0b1"),
+            ("1.2.3+local", "1.2.3"),
+            # PEP 440 makes a trailing zero insignificant.
+            ("0.26.0", "0.26"),
         ],
     )
-    def test_local_and_prerelease_versions_parse(self, raw, expected):
-        assert _parse_version(raw) == expected
+    def test_local_metadata_carries_no_ordering_weight(self, raw, equivalent):
+        assert _parse_version(raw) == _parse_version(equivalent)
 
     def test_ordering_still_works_across_a_local_version(self):
         assert _parse_version("0.26.0b1+web.1") > _parse_version("0.25.0")
 
     def test_a_prerelease_sorts_below_its_own_final(self):
-        """Without the trailing flag these compared EQUAL, so someone on
-        0.26.0b1 would never be told that 0.26.0 had shipped -- the exact case
-        the leniency was added to fix."""
+        """These once compared EQUAL, so someone on 0.26.0b1 would never be
+        told that 0.26.0 had shipped -- the exact case the leniency was added
+        to fix."""
         assert _parse_version("0.26.0") > _parse_version("0.26.0b1")
         assert _parse_version("0.26.0") > _parse_version("0.26.0b1+web.1")
+
+    def test_prerelease_markers_order_among_themselves(self):
+        """The fork's parser collapsed every marker onto one flag, so these
+        compared EQUAL to each other. Upstream's ranks them, which is what
+        lets a 0.26.0b1 build hear that 0.26.0rc1 superseded it."""
+        assert _parse_version("0.26.0a1") < _parse_version("0.26.0b1")
+        assert _parse_version("0.26.0b1") < _parse_version("0.26.0rc1")
+        assert _parse_version("0.26.0rc1") < _parse_version("0.26.0")
 
     def test_release_numbers_still_dominate(self):
         assert _parse_version("1.10.0") > _parse_version("1.9.0")
@@ -374,8 +385,15 @@ class TestPageStructure:
 
 
 class TestPrereleaseIsNotAnnounced:
-    """`uv tool upgrade` / `pipx upgrade` skip pre-releases without an opt-in,
-    so announcing one is a banner the user cannot act on, re-shown every 24h."""
+    """Someone on a final release is never prompted onto a pre-release.
+
+    The fork's reason was that `uv tool upgrade` / `pipx upgrade` skip
+    pre-releases without an opt-in, so the banner named a command that would
+    do nothing. Upstream reached the same rule from the other side: nobody on
+    a stable build asked to be moved onto a beta. Same behaviour either way,
+    and these two cases are the ones both agree on, so they are worth keeping
+    pinned here while upstream owns the implementation.
+    """
 
     def test_prerelease_on_pypi_is_not_announced(self, tmp_path, monkeypatch):
         from claude_swap import update_check
