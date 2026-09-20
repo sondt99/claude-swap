@@ -1748,7 +1748,7 @@ class ClaudeAccountSwitcher:
 
         ``on_demand`` is a human asking for fresh numbers now (the dashboard's
         refresh button). It names every account explicitly, which is what
-        selects ``respect_plans=False`` downstream — so a row may be fetched
+        selects ``respect_plans=False`` downstream -- so a row may be fetched
         before its plan is due, bounded by ``SERVE_TTL_S`` like any other
         fetch. Rate limiting belongs to the caller: the request budget cannot
         absorb this being pressed in a loop.
@@ -1776,6 +1776,11 @@ class ClaudeAccountSwitcher:
                     usage=entries[n],
                     alias=alias,
                     disabled=self._disabled_from_data(seq_data, n),
+                    # Free here: _build_accounts_info already read the
+                    # credential, so this is a parse and not another read.
+                    login_expires_at=(
+                        oauth.login_expires_at_iso(_creds) if _creds else None
+                    ),
                 )
             )
         return AccountsSnapshot(
@@ -1979,7 +1984,7 @@ class ClaudeAccountSwitcher:
         rotation: a disabled slot is held out of automatic switching but is
         still polled for the dashboard, so it still spends the budget.
 
-        Read from stored identities — one sequence read, no credential I/O —
+        Read from stored identities -- one sequence read, no credential I/O --
         so the engine can call it on its tick path. A blank org answers 1:
         blank means "not known", not "the same one".
         """
@@ -5275,7 +5280,7 @@ class ClaudeAccountSwitcher:
             entry = self._usage_store.entries(identities).get(number)
             if entry is None or entry.fetched_at is None:
                 return
-            # The floor is the ORG's, shared with the accounts drawing on it —
+            # The floor is the ORG's, shared with the accounts drawing on it --
             # the same scaling `plan_after_fetch` applies. Writing the bare
             # constant here would reset a correctly-widened plan to 180s on
             # every switch, which on a 4-account org is the whole budget spent

@@ -1,4 +1,4 @@
-"""Web shell for claude-swap — a browser dashboard over the same primitives the TUI uses.
+"""Web shell for claude-swap -- a browser dashboard over the same primitives the TUI uses.
 
 claude-swap exposes three supported hooks for alternate front-ends (see
 ``snapshot_source.py``: "the supported read path for dashboards and GUI shells"):
@@ -10,7 +10,7 @@ claude-swap exposes three supported hooks for alternate front-ends (see
 This module is the HTTP layer over those; it contains no switching, OAuth, or
 usage logic of its own.
 
-Security posture — this process can switch and disable Claude credentials, so a
+Security posture -- this process can switch and disable Claude credentials, so a
 web page from any origin reaching it would be a real problem:
 
   * binds 127.0.0.1 only
@@ -34,6 +34,7 @@ import sys
 import threading
 import time
 import webbrowser
+from datetime import datetime
 from functools import partial
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -124,7 +125,7 @@ HELP_PAGE = """<!doctype html>
   <code>grep CSWAP_WEB_TOKEN deploy/.env</code>
   <p>Then open this <b>once</b>, with that token:</p>
   <code>http://127.0.0.1:8787/?token=&lt;token&gt;</code>
-  <p>After that the token is pinned to a cookie (1 year) — from then on go
+  <p>After that the token is pinned to a cookie (1 year) -- from then on go
      straight to <b>127.0.0.1:8787</b>, no token needed.</p>
 </div>
 """
@@ -138,8 +139,8 @@ HELP_PAGE = """<!doctype html>
 def account_to_json(acc) -> dict:
     """Project an AccountSnapshot for the browser.
 
-    Usage goes through ``usage_to_json`` — the same projection ``cswap list
-    --json`` emits — so countdowns/pace stay correct as the measurement ages
+    Usage goes through ``usage_to_json`` -- the same projection ``cswap list
+    --json`` emits -- so countdowns/pace stay correct as the measurement ages
     and we inherit any upstream schema fix for free.
     """
     entry = acc.usage
@@ -167,6 +168,12 @@ def account_to_json(acc) -> dict:
         "lastError": entry.last_error,
         "failures": entry.consecutive_failures,
         "pollIntervalS": entry.poll_interval_s,
+        # The date the credential has carried all along. Surfaced because the
+        # alternative is finding out when the slot is already dead.
+        "loginExpiresAt": getattr(acc, "login_expires_at", None),
+        "loginExpiresInSeconds": _login_expiry_seconds(
+            getattr(acc, "login_expires_at", None), time.time()
+        ),
     }
     if isinstance(entry.last_good, dict):
         row["usage"] = usage_to_json(entry.last_good, entry.fetched_at)
@@ -175,14 +182,14 @@ def account_to_json(acc) -> dict:
 
 # Fallback staleness line, used ONLY for an account carrying no plan yet (never
 # fetched, or a row predating the stored cadence). An account that HAS a plan is
-# judged against its own — see `_is_behind_plan`.
+# judged against its own -- see `_is_behind_plan`.
 STALE_AFTER_S = 900.0
 
 # Why one fixed line cannot be the general test: poll_policy scales every
 # cadence by the accounts sharing the org's request budget (`budget_share`), so
 # the slowest CORRECT cadence is no longer the 600s idle-candidate ceiling this
 # constant was sized against. At four accounts in one org the store plans
-# 1080-1350s, and up to POST_429_MAX_INTERVAL_S (1800s) after a throttle — all
+# 1080-1350s, and up to POST_429_MAX_INTERVAL_S (1800s) after a throttle -- all
 # past 900s, all exactly as designed. Judging them by one number made the banner
 # fire on a healthy engine, and then blame the wrong thing: the non-failing
 # branch reads "this machine was asleep or the stack was stopped", which sent
@@ -195,7 +202,7 @@ STALE_GRACE_FRAC = JITTER_FRAC
 STALE_GRACE_S = 120.0
 
 
-# Sentinels that mean the row is PARKED until a human acts — it is not being
+# Sentinels that mean the row is PARKED until a human acts -- it is not being
 # retried and will not recover on its own.
 #
 # These are invisible to the `failures >= 2` test below, and not by accident: a
@@ -203,7 +210,7 @@ STALE_GRACE_S = 120.0
 # first check, so no further attempt is ever made and `consecutiveFailures`
 # freezes at 1. It can never reach 2. Measured 2026-09-20: account 3's refresh
 # token died at 23:56, the row sat 9.8 hours stale, and the banner reported "no
-# account is reporting a fetch error" and blamed a sleeping machine — while the
+# account is reporting a fetch error" and blamed a sleeping machine -- while the
 # account's own card, three inches below, read "re-login needed". The machine
 # was fine and had been up ten hours.
 #
@@ -211,6 +218,38 @@ STALE_GRACE_S = 120.0
 # to fetch and an empty slot has nothing to fetch, which are configurations
 # rather than faults; "token expired" is refreshed automatically. These three
 # are a credential that worked and now does not.
+# How far ahead a lapsing login is worth saying out loud.
+#
+# A login has a hard lifetime and simply ages out; nothing breaks and nothing
+# is revoked. Measured on this host 2026-09-20: account 3's login expired at
+# 19:14, its access token carried the slot until 00:28, and the next refresh
+# answered invalid_grant. The account was then quarantined and the first thing
+# anyone saw was a dead slot the following morning. The other three expire
+# 23, 25 and 27 days out, so this recurs about monthly per account.
+#
+# Every part of that is predictable a month ahead, and the credential has
+# carried the date all along (``oauth.login_expires_at_iso``). Seven days is
+# enough notice to re-login at a convenient moment rather than discovering it
+# as an outage.
+LOGIN_EXPIRY_WARN_S = 7 * 24 * 3600.0
+
+
+def _login_expiry_seconds(iso: str | None, now: float) -> float | None:
+    """Seconds until the stored login lapses, negative once it has.
+
+    A credential written before Claude Code recorded the field carries
+    nothing, which means "unknown" and never "now": such a row is silent
+    rather than permanently warned about.
+    """
+    if not iso:
+        return None
+    try:
+        when = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return when.timestamp() - now
+
+
 PARKED_SENTINELS = frozenset(
     {USAGE_RELOGIN_REQUIRED, USAGE_FOREIGN_CREDENTIAL, USAGE_KEYCHAIN_UNAVAILABLE}
 )
@@ -218,7 +257,7 @@ PARKED_SENTINELS = frozenset(
 
 def _is_behind_plan(row: dict) -> bool:
     """Whether an account is overdue against the cadence it actually
-    scheduled — not against a global guess at one."""
+    scheduled -- not against a global guess at one."""
     age = row["ageSeconds"]
     if age is None:
         # No reading at all is not "stale data"; it is a row with nothing to
@@ -232,14 +271,14 @@ def _is_behind_plan(row: dict) -> bool:
 # Presence of this file holds the autoswitch engine off. A file rather than an
 # in-process flag because the engine may run in a *different container*; both
 # see it through the shared home mount. The path lives in paths.py so the
-# engine's own tick honours the same file — this used to be spelled here and
+# engine's own tick honours the same file -- this used to be spelled here and
 # read only by the deployment's shell loop, which made the toggle a no-op for
 # anyone running a native `cswap auto`.
 #
 # Resolved per call, never cached in a module constant: the engine resolves it
 # at tick time, and a constant would freeze whatever Path.home() happened to be
-# at import. The two would then disagree — the dashboard writing one path while
-# the engine consults another — which is precisely the silent no-op this was
+# at import. The two would then disagree -- the dashboard writing one path while
+# the engine consults another -- which is precisely the silent no-op this was
 # meant to end.
 
 
@@ -269,16 +308,26 @@ def snapshot_to_json(snap, threshold: float | None = None) -> dict:
     accounts = [account_to_json(a) for a in snap.accounts]
     failing = [a for a in accounts if (a["failures"] or 0) >= 2]
     parked = [a for a in accounts if a["sentinel"] in PARKED_SENTINELS]
+    # Already-lapsed logins are excluded: those rows are PARKED, reported
+    # above with the instruction to fix them. Warning about a deadline that
+    # has passed would only bury the row that needs acting on.
+    expiring = [
+        a
+        for a in accounts
+        if a["sentinel"] not in PARKED_SENTINELS
+        and a["loginExpiresInSeconds"] is not None
+        and 0 <= a["loginExpiresInSeconds"] <= LOGIN_EXPIRY_WARN_S
+    ]
     # Ages exclude parked rows throughout, the fallback below included: such a
     # row is never fetched again, so its age is unbounded and would dominate
-    # every age this banner quotes — under a message about a stack that stopped.
+    # every age this banner quotes -- under a message about a stack that stopped.
     ages = [
         a["ageSeconds"]
         for a in accounts
         if a["ageSeconds"] is not None and a not in parked
     ]
     # A parked row is stale by construction and grows staler forever, so it must
-    # not also drive the "data is stale" branch — that branch's message is about
+    # not also drive the "data is stale" branch -- that branch's message is about
     # a stack that stopped, and this row is the one thing a restart cannot fix.
     behind = [
         a for a in accounts if a not in parked and _is_behind_plan(a)
@@ -301,12 +350,22 @@ def snapshot_to_json(snap, threshold: float | None = None) -> dict:
             # Named rows, not a count: the action differs per sentinel and the
             # label already carries it ("log in with Claude Code, then run:
             # cswap add"), so the banner can say which slot and what to do.
+            # Not part of `degraded`: nothing is wrong yet, and a banner that
+            # cries for a week teaches the reader to ignore banners. The page
+            # decides how to show it.
+            "expiring": [
+                {
+                    "number": a["number"],
+                    "seconds": a["loginExpiresInSeconds"],
+                }
+                for a in expiring
+            ],
             "parked": [
                 {"number": a["number"], "label": a["sentinelLabel"]} for a in parked
             ],
             # The oldest reading among the rows actually overdue. The plain
             # maximum named whichever row happened to be oldest, which at
-            # peers>1 is routinely a row polling dead on schedule — so the
+            # peers>1 is routinely a row polling dead on schedule -- so the
             # banner quoted an age that was evidence of nothing.
             "maxAgeSeconds": (
                 max(a["ageSeconds"] for a in behind) if behind else max_age
@@ -317,7 +376,7 @@ def snapshot_to_json(snap, threshold: float | None = None) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Service — owns the switcher, serializes access, fans snapshots out over SSE
+# Service -- owns the switcher, serializes access, fans snapshots out over SSE
 # ---------------------------------------------------------------------------
 
 
@@ -326,7 +385,7 @@ class Service:
 
     Every switcher entry point here blocks on file locks, keychain subprocesses
     and network, and none of them are safe to run concurrently against the same
-    live store — so one lock guards them all. Snapshots are taken by one poller
+    live store -- so one lock guards them all. Snapshots are taken by one poller
     thread and broadcast, so ten open tabs still cost one collect pass.
     """
 
@@ -372,7 +431,7 @@ class Service:
         return max(0, ON_DEMAND_HOURLY_REQUESTS - len(self._on_demand_at))
 
     def _fetched_at_by_account(self) -> dict[str, float | None]:
-        """Store-only read of every row's fetch time — no network at all, so
+        """Store-only read of every row's fetch time -- no network at all, so
         metering the refresh cannot itself cost a request."""
         try:
             entries = self.switcher.usage_entries_by_account(fetch=set())
@@ -391,7 +450,7 @@ class Service:
                     "ok": False,
                     "message": (
                         f"No refresh budget left this hour "
-                        f"({ON_DEMAND_HOURLY_REQUESTS} requests) — the background "
+                        f"({ON_DEMAND_HOURLY_REQUESTS} requests) -- the background "
                         f"cadence already spends most of the org's request "
                         f"budget. Nothing is stuck: the numbers keep updating "
                         f"on their own, the active account every "
@@ -420,7 +479,7 @@ class Service:
         self._latest = payload
         self._broadcast(payload)
         # format_age answers None while a reading is fresher than SERVE_TTL_S,
-        # which after a successful refresh is the ordinary case — so its value
+        # which after a successful refresh is the ordinary case -- so its value
         # cannot be interpolated blindly. It said "oldest reading now None".
         note = format_age(payload["health"]["maxAgeSeconds"])
         state = (
@@ -431,7 +490,7 @@ class Service:
         return {
             "ok": True,
             "message": (
-                f"Refreshed — {state}"
+                f"Refreshed -- {state}"
                 + (f", {spent} request{'s' if spent != 1 else ''} spent" if spent else ", free")
                 + f" ({remaining} left this hour)"
             ),
@@ -538,15 +597,15 @@ class Service:
         ``cswap auto --once`` each time and re-reads settings.json on every one.
 
         ``set_setting`` is a read-modify-write, and its write is atomic but its
-        read is not part of that atomicity — two concurrent setters each keep
+        read is not part of that atomicity -- two concurrent setters each keep
         the file well-formed while one silently discards the other's key. The
         in-process lock alone would not be enough (the menu bar writes the same
         file from another process), so take the store's own file lock, which is
         what every other cross-process mutation here serializes on.
         """
         # Deliberately NOT under ``self._lock``: that lock guards the snapshot
-        # source, and holding it across a file-lock wait froze the poller — and
-        # so every connected dashboard — for up to the full timeout while a
+        # source, and holding it across a file-lock wait froze the poller -- and
+        # so every connected dashboard -- for up to the full timeout while a
         # switch held the store lock. ``set_setting`` touches nothing the
         # snapshotter owns, so the file lock alone is the correct scope. The
         # timeout is short because a caller is waiting on an HTTP response.
@@ -580,7 +639,7 @@ class Handler(BaseHTTPRequestHandler):
     # Without this, a client that announces a body and then sends one byte pins
     # a handler thread in rfile.read() indefinitely; ThreadingHTTPServer caps
     # nothing, so a handful of such sockets exhausts threads and fds. Bounding
-    # Content-Length does not help — read(n) blocks until n bytes or EOF.
+    # Content-Length does not help -- read(n) blocks until n bytes or EOF.
     timeout = 15
 
     service: Service
@@ -618,7 +677,7 @@ class Handler(BaseHTTPRequestHandler):
     def _authed(self, query: dict) -> bool:
         # Auth off: the remaining defenses still stand, and they are the ones
         # that matter against the web. A browser cannot forge a same-origin
-        # POST here — cross-origin simple requests carry Origin (rejected
+        # POST here -- cross-origin simple requests carry Origin (rejected
         # below), and anything with a JSON content type is preflighted, which
         # this server never answers. What auth-off *does* concede is local
         # processes: any code on this machine can now drive a switch.
@@ -684,7 +743,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authed(query):
             # A browser hitting the bare URL is the common case (an expired or
             # never-set cookie), and a bare "missing or bad token" gives the
-            # user nowhere to go — so tell them where the token lives. Never
+            # user nowhere to go -- so tell them where the token lives. Never
             # echo the token itself: this response is unauthenticated.
             if route == "/":
                 return self._send(
@@ -741,7 +800,7 @@ class Handler(BaseHTTPRequestHandler):
 
         # Bound BOTH ends, and parse defensively. A negative Content-Length
         # clears an upper-bound-only check, is truthy, and then reaches
-        # rfile.read(-1) — which means "read to EOF": the 64 KB cap is skipped
+        # rfile.read(-1) -- which means "read to EOF": the 64 KB cap is skipped
         # and, if the peer never closes, the handler thread blocks forever
         # holding its socket. A non-integer header must not raise out of here
         # either; ValueError is not caught below and would 500.
@@ -833,7 +892,7 @@ class Handler(BaseHTTPRequestHandler):
             return {
                 "ok": True,
                 "message": (
-                    "Autoswitch paused — your manual choice will stay put"
+                    "Autoswitch paused -- your manual choice will stay put"
                     if paused
                     else "Autoswitch resumed"
                 ),
@@ -955,7 +1014,7 @@ def run(
         else f"http://127.0.0.1:{port}/?token={token}"
     )
     # flush=True: stdout is block-buffered whenever it isn't a tty, so a
-    # redirected or service-managed run would otherwise never show this —
+    # redirected or service-managed run would otherwise never show this --
     # and the token is only ever printed here.
     print(f"cswap-web  ·  claude-swap {CSWAP_VERSION}", flush=True)
     print(f"  {url}", flush=True)
@@ -963,7 +1022,7 @@ def run(
         # Stated plainly on every start: an unauthenticated switch endpoint is
         # easy to forget about months later.
         print(
-            "  AUTH DISABLED — any local process can switch/disable your "
+            "  AUTH DISABLED -- any local process can switch/disable your "
             "accounts.\n"
             "  Still enforced: loopback bind, Origin check, Host pin, no CORS.",
             flush=True,

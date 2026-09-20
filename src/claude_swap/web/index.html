@@ -11,7 +11,7 @@
      constants are the single source of truth; if they change there, change
      them here.
 
-         ACCENT   #d7875f  warm terracotta (xterm 173) — the same tone
+         ACCENT   #d7875f  warm terracotta (xterm 173) -- the same tone
                            printer.py has always used, a deliberate nod to
                            Claude Code's orange, used sparingly
          SEV_OK   #87af87  calm green      SEV_WARN #d7af5f  amber
@@ -21,7 +21,7 @@
      a dark background. Verified against the method's validator on cswap's own
      surface: CVD separation passes comfortably (worst adjacent dE 23.9, target
      >=12) and all three clear 3:1 contrast. It fails the chroma floor on the
-     green, which genuinely reads close to grey — mitigated the way upstream
+     green, which genuinely reads close to grey -- mitigated the way upstream
      mitigates it, by always printing the percentage beside the bar, so the
      value is never carried by colour alone.
 
@@ -64,7 +64,7 @@
   }
   * { box-sizing: border-box; }
   /* The UA rule for [hidden] is `display: none`, which ANY author `display`
-     out-ranks — and several things hidden here (.hero, .meter, .scoped) carry
+     out-ranks -- and several things hidden here (.hero, .meter, .scoped) carry
      `display: flex`. Without this, `el.hidden = true` is a silent no-op and a
      meter keeps showing the previous snapshot's percentage after its data goes
      away. Must out-rank those author rules, hence !important. */
@@ -101,7 +101,7 @@
      which is more use than a dead control. */
   button.spent { opacity: .55; }
   /* Per-card Switch is an outline, not a solid fill. Upstream spends the
-     terracotta sparingly — it means "this is the active account" and nothing
+     terracotta sparingly -- it means "this is the active account" and nothing
      else. Three solid accent buttons competed with the ACTIVE badge for exactly
      the signal the accent is supposed to carry, so the repeated action gets a
      tinted outline and the single primary CTA in the header keeps the fill. */
@@ -117,7 +117,7 @@
   }
 
   /* ---- hero: the one number the page leads with ----
-     The engine switches on the *binding* window — max(5h, 7d) — so that is the
+     The engine switches on the *binding* window -- max(5h, 7d) -- so that is the
      figure, not two competing ones. Proportional figures, not tabular: equal
      digit widths make a number like 81 look loose at display size. */
   .hero {
@@ -133,7 +133,7 @@
   .hero-label b { color: var(--ink); font-weight: 600; }
   .hero-meta { font-size: 12px; color: var(--faint); }
 
-  /* Threshold control — one row above everything it governs, and never inside
+  /* Threshold control -- one row above everything it governs, and never inside
      a section that can be hidden. */
   .ctl-row {
     display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
@@ -224,6 +224,8 @@
   }
   .badge.on { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
   .badge.off { background: color-mix(in srgb, var(--faint) 20%, transparent); color: var(--muted); }
+  /* Amber, not red: the login has not lapsed yet and the row still works. */
+  .badge.warn { background: color-mix(in srgb, var(--warn) 18%, transparent); color: color-mix(in srgb, var(--warn) 82%, var(--ink)); text-transform: none; letter-spacing: 0; }
   .badge.alias { background: color-mix(in srgb, var(--good) 16%, transparent); color: color-mix(in srgb, var(--good) 78%, var(--ink)); text-transform: none; letter-spacing: 0; }
 
   .meters { display: flex; flex-direction: column; gap: 11px; }
@@ -284,8 +286,8 @@
     <div class="dot" id="dot"></div>
     <h1>cswap</h1>
     <div class="spacer"></div>
-    <button id="pause">Auto: —</button>
-    <button id="refresh" title="Fetch fresh usage now, ignoring the poll plans. Metered in requests/hour — a press that finds everything current is free.">Refresh</button>
+    <button id="pause">Auto: --</button>
+    <button id="refresh" title="Fetch fresh usage now, ignoring the poll plans. Metered in requests/hour -- a press that finds everything current is free.">Refresh</button>
     <button id="rotate">Rotate</button>
     <button id="avail">Next available</button>
     <button id="best" class="primary">Switch to best</button>
@@ -296,7 +298,7 @@
 
   <section class="hero" id="hero" hidden>
     <div class="hero-fig">
-      <span class="hero-num" id="hero-num">—</span><span class="hero-pct">%</span>
+      <span class="hero-num" id="hero-num">--</span><span class="hero-pct">%</span>
     </div>
     <div class="hero-body">
       <div class="hero-label" id="hero-label"></div>
@@ -309,7 +311,7 @@
 
   <!-- Outside the hero on purpose. The hero is hidden whenever there is no
        active account or no usage yet, and this control governs every meter on
-       the page — nesting it there made it vanish exactly when a usage outage
+       the page -- nesting it there made it vanish exactly when a usage outage
        made lowering the threshold most useful, and took it out of the tab
        order with it. -->
   <div class="ctl-row">
@@ -389,7 +391,7 @@ const SEV = {
   crit:    { v: "--crit",    word: "over threshold" },
 };
 
-// Distinct shapes, not just distinct hues — the light-mode warning and serious
+// Distinct shapes, not just distinct hues -- the light-mode warning and serious
 // steps sit below 3:1, so the shape and the word carry the state.
 const SHAPE = {
   warn: '<svg viewBox="0 0 10 10" aria-hidden="true"><path d="M5 0 10 9H0z"/></svg>',
@@ -470,7 +472,7 @@ function paintMeter(m, w, showTick) {
   }
   const showPace = w.aheadOfPace && w.expectedPct != null;
   m.pace.hidden = !showPace;
-  if (showPace) m.pace.textContent = `ahead of pace — expected ${w.expectedPct}%`;
+  if (showPace) m.pace.textContent = `ahead of pace -- expected ${w.expectedPct}%`;
 }
 
 // ---- cards -------------------------------------------------------------
@@ -534,11 +536,12 @@ function paintCard(c, a) {
     freshHTML(a) +
     (a.isActive ? `<span class="badge on">active</span>` : "") +
     (a.disabled ? `<span class="badge off">disabled</span>` : "") +
-    (a.alias ? `<span class="badge alias">${esc(a.alias)}</span>` : "");
+    (a.alias ? `<span class="badge alias">${esc(a.alias)}</span>` : "") +
+    loginExpiryHTML(a);
 
   const u = a.usage;
   // The engine gates on max(5h, 7d), so the tick belongs on whichever of the
-  // two is currently binding — marking both would imply two independent lines.
+  // two is currently binding -- marking both would imply two independent lines.
   const p5 = u && u.fiveHour ? clampPct(u.fiveHour.pct) : -1;
   const p7 = u && u.sevenDay ? clampPct(u.sevenDay.pct) : -1;
   paintMeter(c.m5, u && u.fiveHour, p5 >= p7);
@@ -559,6 +562,17 @@ function paintCard(c, a) {
   c.bSwitch.hidden = !!a.isActive || !a.switchable;
   c.bToggle.textContent = a.disabled ? "Enable" : "Disable";
   c.bToggle.dataset.on = a.disabled ? "0" : "1";
+}
+
+// Seven days, matching the server's LOGIN_EXPIRY_WARN_S. On the card as well
+// as the banner because the banner names slots and the card is where someone
+// looks when deciding which account to use next.
+const LOGIN_WARN_S = 7 * 24 * 3600;
+
+function loginExpiryHTML(a) {
+  const left = a.loginExpiresInSeconds;
+  if (left == null || left < 0 || left > LOGIN_WARN_S) return "";
+  return `<span class="badge warn" title="The stored login lapses then. Log in with Claude Code as this account, then run: cswap add">login ${esc(ago(left))}</span>`;
 }
 
 function renderCards(acc) {
@@ -595,7 +609,7 @@ function renderHero(active) {
     // figure is the largest number on the page and must not be recoverable as
     // stale content if the hide rule is ever out-ranked again.
     hero.hidden = true;
-    $("hero-num").textContent = "—";
+    $("hero-num").textContent = "--";
     $("hero-label").textContent = "";
     $("hero-meta").textContent = "";
     $("hero-fill").style.width = "0%";
@@ -626,7 +640,7 @@ function renderHero(active) {
     `<span class="slot">#${esc(active.number)}</span> ${chip(s)}`;
   const head = Math.max(0, THRESHOLD - pct);
   $("hero-meta").textContent = pct >= THRESHOLD
-    ? `The ${which} window is over the ${fmtThr(THRESHOLD)}% threshold — the engine will switch on its next tick.`
+    ? `The ${which} window is over the ${fmtThr(THRESHOLD)}% threshold -- the engine will switch on its next tick.`
     : `The ${which} window is binding · ${head.toFixed(0)}% of headroom left before the ${fmtThr(THRESHOLD)}% switch threshold.`;
 }
 
@@ -642,18 +656,18 @@ function renderPause(p) {
   if (paused) {
     note.innerHTML =
       "<b>Autoswitch is off.</b> The account you picked will stay put, but you " +
-      "are <b>not</b> protected from rate limits — when the quota runs out " +
+      "are <b>not</b> protected from rate limits -- when the quota runs out " +
       "nothing will move you. Press <b>Auto: OFF</b> to turn it back on.";
   }
 }
 
-// Usage fetches can fail silently for hours — the engine keeps switching on
+// Usage fetches can fail silently for hours -- the engine keeps switching on
 // last-good data, just increasingly late. Say so loudly, and name the check
 // that distinguishes a TLS-trust problem from a real network one.
 // `degraded` is set by EITHER of two unrelated conditions -- accounts whose
 // fetches are erroring, or data that is merely old -- and they need different
 // messages. Reporting the first for the second produced the self-contradictory
-// "Usage fetches are failing — 0 account(s)", and sent the reader off debugging
+// "Usage fetches are failing -- 0 account(s)", and sent the reader off debugging
 // TLS when the real cause was a suspended laptop.
 
 // ...and the advice has to match the FAILURE KIND too. A usage-endpoint
@@ -666,7 +680,7 @@ function renderPause(p) {
 // one request budget.
 function healthHint(lastError) {
   if (lastError === "http-429" || lastError === "http-403") {
-    return `<span class="hint">This is a polling throttle, not a fault — the ` +
+    return `<span class="hint">This is a polling throttle, not a fault -- the ` +
       `accounts themselves are fine and still usable in Claude Code; only ` +
       `these usage numbers are rate limited. It clears on its own as the ` +
       `endpoint's trailing hour frees up.` +
@@ -680,10 +694,17 @@ function healthHint(lastError) {
 
 function renderHealth(h) {
   const el = $("health");
-  if (!h || !h.degraded) { el.classList.remove("show"); return; }
+  // `degraded` stays false for an expiring login on purpose: nothing is wrong
+  // yet. The banner still shows, because a warning nobody sees is not a
+  // warning.
+  if (!h || (!h.degraded && !(h.expiring || []).length)) {
+    el.classList.remove("show");
+    return;
+  }
   const age = h.maxAgeSeconds != null ? ago(h.maxAgeSeconds) : "?";
   const failing = (h.failingCount || 0) > 0;
   const parked = h.parked || [];
+  const expiring = h.expiring || [];
 
   el.classList.toggle("warn-only", !failing && !parked.length);
 
@@ -691,23 +712,42 @@ function renderHealth(h) {
   // clears itself. Neither other message fits one: the failing branch offers a
   // transport check for a credential problem, and the stale branch blames a
   // sleeping machine for a row that would still be stale on a machine that
-  // never slept. That is what it did on 2026-09-20 — nine hours of "your
+  // never slept. That is what it did on 2026-09-20 -- nine hours of "your
   // machine was asleep" while the account card read "re-login needed".
   if (parked.length) {
     const rows = parked
-      .map((p) => `<b>#${esc(p.number)}</b> — ${esc(p.label || "needs attention")}`)
+      .map((p) => `<b>#${esc(p.number)}</b> -- ${esc(p.label || "needs attention")}`)
       .join("<br>");
     el.innerHTML =
       `<b>${parked.length === 1 ? "An account needs" : `${parked.length} accounts need`} ` +
-      `attention.</b> Not a fetch problem and it will not clear on its own — ` +
+      `attention.</b> Not a fetch problem and it will not clear on its own -- ` +
       `the slot is out of rotation until its credential is replaced.<br>${rows}`;
+    el.classList.add("show");
+    return;
+  }
+
+  // After the two fault branches and before the stale one: nothing is broken
+  // yet, which is the entire point. A login ages out on a fixed date the
+  // credential has always carried, and the first symptom otherwise is a dead
+  // slot the next morning (account 3, 2026-09-20).
+  if (!failing && expiring.length) {
+    const rows = expiring
+      .map((e) => `<b>#${esc(e.number)}</b> in ${esc(ago(e.seconds))}`)
+      .join(", ");
+    el.classList.add("warn-only");
+    el.innerHTML =
+      `<b>A login is about to expire.</b> ${rows}. Nothing is wrong yet and ` +
+      `usage keeps updating; once the date passes the slot drops out of ` +
+      `rotation until it is logged in again.` +
+      `<span class="hint">Log in with Claude Code as that account, then run:` +
+      `\ncswap add</span>`;
     el.classList.add("show");
     return;
   }
 
   if (failing) {
     el.innerHTML =
-      `<b>Usage fetches are failing</b> — ${esc(h.failingCount)} account(s), ` +
+      `<b>Usage fetches are failing</b> -- ${esc(h.failingCount)} account(s), ` +
       `oldest data ${esc(age)}${h.lastError ? ` · ${esc(h.lastError)}` : ""}. ` +
       `The engine still switches, but on stale numbers, so it will be late.` +
       healthHint(h.lastError);
@@ -716,7 +756,7 @@ function renderHealth(h) {
     // machine that was asleep or a stack that was stopped -- both self-heal on
     // the next tick, so say that rather than implying a fault.
     el.innerHTML =
-      `<b>Usage data is stale</b> — oldest reading ${esc(age)}, and no account ` +
+      `<b>Usage data is stale</b> -- oldest reading ${esc(age)}, and no account ` +
       `is reporting a fetch error. Usually means this machine was asleep or the ` +
       `stack was stopped; it clears itself on the next successful poll. ` +
       `Until then the engine decides on those older numbers.` +
@@ -731,7 +771,7 @@ const thr = $("thr"), thrVal = $("thr-val");
 let lastSnap = null;
 // A drag must not fight the 10s snapshot. Hold the server's value off for long
 // enough that the POST lands and the next snapshot already carries the new
-// number — otherwise the handle visibly snaps back mid-gesture.
+// number -- otherwise the handle visibly snaps back mid-gesture.
 let thrHoldUntil = 0;
 
 const fmtThr = (v) => String(Math.round(v * 10) / 10);
@@ -784,12 +824,12 @@ function commitThreshold() {
   thrHoldUntil = Date.now() + 6000;
   post("/api/threshold", { value: Number(thr.value) }).then((ok) => {
     // On rejection drop the hold immediately so the next snapshot restores the
-    // real value. Without this the page kept displaying — and drawing every
-    // tick against — a threshold the server had refused.
+    // real value. Without this the page kept displaying -- and drawing every
+    // tick against -- a threshold the server had refused.
     if (!ok) {
       thrHoldUntil = 0;
       // Number.isFinite, not typeof: the server emits `threshold: null` when it
-      // cannot read settings, and `typeof null` is "object" — so a typeof guard
+      // cannot read settings, and `typeof null` is "object" -- so a typeof guard
       // here left the page permanently asserting a value the server refused.
       const back = Number.isFinite(lastSnap && lastSnap.threshold)
         ? lastSnap.threshold : DEFAULT_THRESHOLD;
@@ -843,7 +883,7 @@ grid.addEventListener("click", (e) => {
   else if (b.dataset.act === "toggle")
     post("/api/disabled", { identifier: id, disabled: b.dataset.on === "1" });
   else if (b.dataset.act === "alias") {
-    const v = prompt(`Alias for slot ${id}\n(letters, digits, - _ . — cannot be all digits)`);
+    const v = prompt(`Alias for slot ${id}\n(letters, digits, - _ . -- cannot be all digits)`);
     if (v && v.trim()) post("/api/alias", { identifier: id, alias: v.trim() });
   }
 });

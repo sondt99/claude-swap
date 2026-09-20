@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import http.client
 import json
+from datetime import datetime, timezone
 import threading
+import time
 from http.server import ThreadingHTTPServer
 
 import pytest
@@ -259,7 +261,7 @@ class TestEnginePauseGate:
     def _engine(self, tmp_path, monkeypatch, *, dry_run=False):
         """A bare engine: the gate runs before anything that needs a store.
 
-        Deliberately does NOT stub ``_tick_inner`` — the gate lives inside it,
+        Deliberately does NOT stub ``_tick_inner`` -- the gate lives inside it,
         so stubbing that method would test nothing. ``_read_state`` is the
         first call after the gate, which makes it the seam.
         """
@@ -336,7 +338,7 @@ class TestEnginePauseGate:
         assert engine._blocked_wait_long is False
 
     def test_dry_run_is_not_pausable(self, tmp_path, monkeypatch):
-        """A dry run cannot switch, so there is nothing to hold off — and
+        """A dry run cannot switch, so there is nothing to hold off -- and
         gating it froze the TUI's auto view, which puts the app in store-only
         mode and relies on the engine for fetches."""
         engine = self._engine(tmp_path, monkeypatch, dry_run=True)
@@ -759,15 +761,15 @@ class TestAParkedAccountIsNotAStaleMachine:
     """The banner blamed a sleeping machine for a dead credential.
 
     Measured 2026-09-20: account 3's refresh token died at 23:56, the row sat
-    9.8 hours stale, and the banner read "Usage data is stale — oldest reading
+    9.8 hours stale, and the banner read "Usage data is stale -- oldest reading
     9.7h, and no account is reporting a fetch error. Usually means this machine
     was asleep or the stack was stopped." The machine had been up ten hours,
     the engine was ticking, the other three accounts were 0.0-0.3h fresh, and
-    the account's own card said "re-login needed — refresh token dead".
+    the account's own card said "re-login needed -- refresh token dead".
 
     The hole is structural, not a tuning miss. `usage_store._row_eligible`
     refuses an auth-dead row on its FIRST check, so no further attempt is made
-    and `consecutiveFailures` freezes at 1 — the `>= 2` test can never see it.
+    and `consecutiveFailures` freezes at 1 -- the `>= 2` test can never see it.
     """
 
     @staticmethod
@@ -823,7 +825,7 @@ class TestAParkedAccountIsNotAStaleMachine:
 
     def test_benign_sentinels_are_not_parked(self):
         """An api-key account has no subscription quota to fetch and an empty
-        slot has nothing to fetch — configurations, not faults. "token
+        slot has nothing to fetch -- configurations, not faults. "token
         expired" is refreshed automatically."""
         for benign in ("api key", "no credentials", "token expired"):
             health = self._health([(60.0, 300.0, None, 0, benign)])
@@ -849,3 +851,103 @@ class TestAParkedAccountIsNotAStaleMachine:
         page = (web_server.HERE / "index.html").read_text()
         assert "h.parked" in page
         assert page.index("if (parked.length)") < page.index("if (failing)")
+
+
+class TestALapsingLoginIsAnnouncedBeforeItLapses:
+    """Account 3 died overnight on a date it had carried all along.
+
+    Measured 2026-09-20: its login expired 19/09 19:14, the access token
+    carried the slot until 00:28, and the next refresh answered invalid_grant.
+    The credential had recorded `refreshTokenExpiresAt` the whole time and
+    nothing read it, so the first symptom was a dead slot the next morning.
+    The other three expire 23, 25 and 27 days out, so this recurs about
+    monthly per account and is predictable a month ahead every time.
+    """
+
+    DAY = 24 * 3600.0
+
+    @staticmethod
+    def _snap(rows, now):
+        accounts = []
+        for n, (days, sentinel) in enumerate(rows, start=1):
+            iso = None
+            if days is not None:
+                when = datetime.fromtimestamp(now + days * 86400, tz=timezone.utc)
+                iso = when.isoformat(timespec="seconds").replace("+00:00", "Z")
+            accounts.append(
+                type("A", (), {
+                    "number": str(n), "email": f"a{n}@x", "alias": "",
+                    "org_name": "", "display_tag": "", "is_active": n == 1,
+                    "kind": "oauth", "switchable": True, "disabled": False,
+                    "login_expires_at": iso,
+                    "usage": type("U", (), {
+                        "sentinel": sentinel, "age_s": 60.0, "last_error": None,
+                        "consecutive_failures": 0, "poll_interval_s": 300.0,
+                        "last_good": None,
+                    })(),
+                })()
+            )
+        return type(
+            "S", (), {"accounts": accounts, "active_number": "1", "taken_at": 0.0}
+        )()
+
+    def _payload(self, rows):
+        now = time.time()
+        return web_server.snapshot_to_json(self._snap(rows, now))
+
+    def test_a_login_inside_the_window_is_named(self):
+        health = self._payload([(3.0, None), (25.0, None)])["health"]
+        assert [e["number"] for e in health["expiring"]] == ["1"]
+
+    def test_a_login_far_out_is_silent(self):
+        assert self._payload([(25.0, None)])["health"]["expiring"] == []
+
+    def test_it_does_not_mark_the_stack_degraded(self):
+        """Nothing is wrong yet, and a banner that cries for a week teaches
+        the reader to ignore banners."""
+        assert self._payload([(3.0, None)])["health"]["degraded"] is False
+
+    def test_an_already_parked_row_is_not_also_warned_about(self):
+        """Its deadline has passed; it is reported as parked, with the fix."""
+        health = self._payload([(-1.0, "re-login needed")])["health"]
+        assert health["expiring"] == []
+        assert [p["number"] for p in health["parked"]] == ["1"]
+
+    def test_a_lapsed_login_without_the_sentinel_yet_is_not_warned_about(self):
+        """Between expiry and the first refused refresh the row still works.
+        Warning about a deadline already behind us helps nobody."""
+        assert self._payload([(-0.5, None)])["health"]["expiring"] == []
+
+    def test_a_credential_with_no_recorded_expiry_is_silent(self):
+        """Logins issued before Claude Code recorded the field carry nothing,
+        which means unknown, never now."""
+        payload = self._payload([(None, None)])
+        assert payload["health"]["expiring"] == []
+        assert payload["accounts"][0]["loginExpiresInSeconds"] is None
+
+    def test_the_row_carries_the_raw_date_and_the_countdown(self):
+        account = self._payload([(3.0, None)])["accounts"][0]
+        assert account["loginExpiresAt"].endswith("Z")
+        assert 2.9 * self.DAY < account["loginExpiresInSeconds"] < 3.1 * self.DAY
+
+    def test_an_unparseable_date_does_not_break_the_snapshot(self):
+        now = time.time()
+        snap = self._snap([(3.0, None)], now)
+        snap.accounts[0].login_expires_at = "not a date"
+        payload = web_server.snapshot_to_json(snap)
+        assert payload["accounts"][0]["loginExpiresInSeconds"] is None
+        assert payload["health"]["expiring"] == []
+
+    def test_the_page_shows_it_on_the_card_and_after_the_fault_branches(self):
+        page = (web_server.HERE / "index.html").read_text()
+        assert "loginExpiryHTML" in page
+        assert "loginExpiresInSeconds" in page
+        # Faults first: something already broken outranks something that will.
+        assert page.index("if (parked.length)") < page.index("expiring.length")
+        assert page.index("if (failing)") > page.index("expiring.length")
+
+    def test_the_fork_writes_no_em_dashes(self):
+        """Project rule, see CLAUDE.md. Upstream's own em-dashes stay put:
+        rewriting a line upstream also touches is a merge conflict forever."""
+        for name in ("index.html", "server.py"):
+            assert "—" not in (web_server.HERE / name).read_text(), name

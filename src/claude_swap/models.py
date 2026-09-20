@@ -140,6 +140,12 @@ class AccountSnapshot:
     usage: UsageEntry
     alias: str = ""
     disabled: bool = False  # held out of auto-rotation (still a valid explicit target)
+    # When the stored LOGIN lapses (``oauth.login_expires_at_iso``), ISO-8601
+    # UTC, or None when the credential records no such field. Distinct from
+    # the access token's own expiry, which is renewed automatically: once this
+    # passes, nothing short of a fresh login revives the slot, and the row goes
+    # to "re-login needed" with no warning at all unless something reads this.
+    login_expires_at: str | None = None
 
     @property
     def display_tag(self) -> str:
