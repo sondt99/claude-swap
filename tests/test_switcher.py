@@ -12532,3 +12532,81 @@ class TestSessionShellGuardCoversEveryMutator:
         s = self._switcher(sample_sequence_data, monkeypatch)
         with pytest.raises(SwitchError):
             s.unset_alias("2")
+
+
+class TestRemovingAMiddleSlotSaysWhatTheGapDoes:
+    """A slot removed from the middle is never reused, and nothing said so.
+
+    Reported 2026-09-23 as "sao cai so 3 dau roi? 1 2 4 5 the nay??". Slot 3
+    was removed on 22/09 and the same account re-added on 23/09; it came back
+    as slot 5, because `_get_next_account_number` is max(existing) + 1 and
+    never fills a gap. The removal printed one line and that line did not
+    mention any of it.
+
+    Removal does not renumber the survivors on purpose: slot numbers are
+    identifiers, named by `cswap switch <n>`, `cswap map <num> <path>`,
+    aliases and session profile directories. Auto-compacting would silently
+    change one account's number when a DIFFERENT one is removed.
+    """
+
+    @staticmethod
+    def _seed(switcher, nums):
+        switcher._setup_directories()
+        switcher._init_sequence_file()
+        data = switcher._get_sequence_data()
+        for n in nums:
+            data["accounts"][str(n)] = {
+                "email": f"a{n}@x.com",
+                "uuid": f"u{n}",
+                "organizationUuid": "",
+                "organizationName": "",
+                "added": "2024-01-01T00:00:00Z",
+            }
+        data["sequence"] = list(nums)
+        switcher._write_json(switcher.sequence_file, data)
+
+    def _remove(self, temp_home, monkeypatch, capsys, nums, target):
+        switcher = ClaudeAccountSwitcher()
+        self._seed(switcher, nums)
+        monkeypatch.setattr("builtins.input", lambda *a, **k: "y")
+        switcher.remove_account(str(target))
+        return capsys.readouterr().out
+
+    def test_a_middle_slot_names_the_command_that_fills_it(
+        self, temp_home, monkeypatch, capsys
+    ):
+        out = self._remove(temp_home, monkeypatch, capsys, [1, 2, 3, 4], 3)
+        assert "slot 3 is now free" in out
+        # The number the next add actually takes, which is the surprise.
+        assert "takes 5" in out
+        assert "cswap move" in out
+
+    def test_the_last_slot_says_nothing(self, temp_home, monkeypatch, capsys):
+        """Removing the highest slot leaves no gap: the next add reuses it,
+        so there is nothing to warn about."""
+        out = self._remove(temp_home, monkeypatch, capsys, [1, 2, 3], 3)
+        assert "now free" not in out
+
+    def test_the_only_account_says_nothing(self, temp_home, monkeypatch, capsys):
+        out = self._remove(temp_home, monkeypatch, capsys, [1], 1)
+        assert "now free" not in out
+
+    def test_it_reports_the_real_next_number_not_just_a_gap(
+        self, temp_home, monkeypatch, capsys
+    ):
+        """With 1, 2, 4, 7 present, removing 2 means the next add takes 8."""
+        out = self._remove(temp_home, monkeypatch, capsys, [1, 2, 4, 7], 2)
+        assert "slot 2 is now free" in out
+        assert "takes 8" in out
+
+    def test_removal_still_does_not_renumber_the_survivors(
+        self, temp_home, monkeypatch, capsys
+    ):
+        """The guarantee the hint exists to explain rather than change."""
+        switcher = ClaudeAccountSwitcher()
+        self._seed(switcher, [1, 2, 3, 4])
+        monkeypatch.setattr("builtins.input", lambda *a, **k: "y")
+        switcher.remove_account("3")
+        data = switcher._get_sequence_data()
+        assert sorted(int(n) for n in data["accounts"]) == [1, 2, 4]
+        assert switcher._get_next_account_number() == 5

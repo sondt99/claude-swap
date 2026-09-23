@@ -4068,6 +4068,25 @@ class ClaudeAccountSwitcher:
         self._logger.info(f"Removed account {account_num}: {email}")
         print(f"{accent('Removed')} Account-{account_num} ({email})")
 
+        # Say what the freed number does next, because it does not do the
+        # obvious thing. `_get_next_account_number` is max(existing) + 1, so a
+        # slot removed from the middle is never reused and the next add lands
+        # past it. Reported 2026-09-23 as "sao cai so 3 dau roi? 1 2 4 5 the
+        # nay??": slot 3 was removed, re-added a day later, and came back as 5.
+        #
+        # Slot numbers are identifiers, not display order: `cswap switch 3`,
+        # `cswap map <num> <path>`, aliases and session profile directories all
+        # name them, which is why removal does not renumber the survivors. The
+        # gap is real and it is the operator's to fill, so this names the
+        # command that fills it rather than leaving it to be discovered.
+        remaining = [int(n) for n in data["accounts"]]
+        if remaining and int(account_num) < max(remaining):
+            print(
+                f"  slot {account_num} is now free. The next `cswap add` takes "
+                f"{max(remaining) + 1}, not {account_num}; move an account into "
+                f"the gap with: cswap move <num|email> {account_num}"
+            )
+
         self._prune_mappings(email, account_info.get("organizationUuid", ""))
 
     def _build_accounts_info(self) -> list[tuple[int, str, str, str, bool, str, str]]:
