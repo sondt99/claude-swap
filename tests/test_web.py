@@ -992,3 +992,12 @@ class TestALapsingLoginIsAnnouncedBeforeItLapses:
                 checked.append(path)
         # Guard the guard: a wrong root would make every assert vacuous.
         assert len(checked) >= 9, [str(c) for c in checked]
+
+    def test_the_countdown_reaches_days(self):
+        """The warning runs to seven days, and `ago` stopped at hours: the
+        banner read "#2 in 154.0h", a number nobody converts in their head,
+        while the cards beside it already said "5d 23h"."""
+        page = (web_server.HERE / "index.html").read_text()
+        ago = page[page.index("const ago ="):page.index("const clampPct")]
+        assert "86400" in ago, "ago still tops out below a day"
+        assert "}d ${" in ago
