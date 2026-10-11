@@ -226,6 +226,10 @@
   .badge.off { background: color-mix(in srgb, var(--faint) 20%, transparent); color: var(--muted); }
   /* Amber, not red: the login has not lapsed yet and the row still works. */
   .badge.warn { background: color-mix(in srgb, var(--warn) 18%, transparent); color: color-mix(in srgb, var(--warn) 82%, var(--ink)); text-transform: none; letter-spacing: 0; }
+  /* Outside the warning window: plain muted text, deliberately not a badge.
+     A badge on every card for a date a month away is noise competing with
+     the ones that mean something. */
+  .login-far { color: var(--faint); }
   .badge.alias { background: color-mix(in srgb, var(--good) 16%, transparent); color: color-mix(in srgb, var(--good) 78%, var(--ink)); text-transform: none; letter-spacing: 0; }
 
   .meters { display: flex; flex-direction: column; gap: 11px; }
@@ -574,10 +578,38 @@ function paintCard(c, a) {
 // looks when deciding which account to use next.
 const LOGIN_WARN_S = 7 * 24 * 3600;
 
+// The server sends the expiry as ISO UTC. Rendered the way oauth.format_reset
+// writes a window reset ("Oct 17 22:05", bare clock when it is today), so the
+// two dates on a card read as one vocabulary rather than two.
+function expiryClock(iso) {
+  const d = new Date(iso);
+  if (isNaN(d)) return "";
+  const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+  if (d.toDateString() === new Date().toDateString()) return time;
+  const day = d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  return `${day} ${time}`;
+}
+
+// Shown on EVERY account, not only the ones inside the warning window.
+//
+// It started as a warning that appeared at seven days and was invisible before
+// that, which answers "is anything wrong" but not "when is this one due" --
+// and the second question is the one asked while planning. So the line is
+// always there and the STYLING carries the urgency: amber inside the window,
+// muted text outside it. A credential that records no expiry still shows
+// nothing, because unknown is not a date.
 function loginExpiryHTML(a) {
   const left = a.loginExpiresInSeconds;
-  if (left == null || left < 0 || left > LOGIN_WARN_S) return "";
-  return `<span class="badge warn" title="The stored login lapses then. Log in with Claude Code as this account, then run: cswap add">login ${esc(ago(left))}</span>`;
+  if (left == null) return "";
+  const title = "When the stored login lapses. Log in with Claude Code as this account, then run: cswap add";
+  if (left < 0) {
+    return `<span class="badge warn" title="${title}">login expired</span>`;
+  }
+  const when = a.loginExpiresAt ? expiryClock(a.loginExpiresAt) : "";
+  const text = `login ${ago(left)}${when ? " \u00b7 " + when : ""}`;
+  return left <= LOGIN_WARN_S
+    ? `<span class="badge warn" title="${title}">${esc(text)}</span>`
+    : `<span class="login-far" title="${title}">${esc(text)}</span>`;
 }
 
 function renderCards(acc) {

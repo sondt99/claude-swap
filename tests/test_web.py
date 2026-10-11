@@ -1001,3 +1001,28 @@ class TestALapsingLoginIsAnnouncedBeforeItLapses:
         ago = page[page.index("const ago ="):page.index("const clampPct")]
         assert "86400" in ago, "ago still tops out below a day"
         assert "}d ${" in ago
+
+    def test_the_card_shows_an_expiry_for_every_account(self):
+        """It began as a warning that appeared at seven days and was invisible
+        before that, which answers "is anything wrong" but not "when is this
+        one due". The second question is the one asked while planning."""
+        page = (web_server.HERE / "index.html").read_text()
+        fn = page[page.index("function loginExpiryHTML"):page.index("function renderCards")]
+        # No early return for a date beyond the window.
+        assert "left > LOGIN_WARN_S) return" not in fn
+        # Urgency is carried by styling, not by presence.
+        assert "badge warn" in fn and "login-far" in fn
+        assert ".login-far {" in page
+        # Unknown is still not a date.
+        assert "left == null) return" in fn
+        # And a lapsed one says so rather than showing a negative countdown.
+        assert "login expired" in fn
+
+    def test_the_expiry_date_matches_the_window_reset_vocabulary(self):
+        """`oauth.format_reset` writes "Oct 17 22:05", bare clock when today.
+        Two dates on one card should not read as two conventions."""
+        page = (web_server.HERE / "index.html").read_text()
+        fn = page[page.index("function expiryClock"):page.index("// Shown on EVERY")]
+        assert 'month: "short"' in fn and 'day: "numeric"' in fn
+        assert "hour12: false" in fn
+        assert "toDateString()" in fn, "same-day case should drop the date"
