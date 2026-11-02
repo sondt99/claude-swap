@@ -28,6 +28,74 @@ if ! docker info >/dev/null 2>&1; then
   (This is distinct from the container being down.)"
 fi
 
+# -- upgrade -----------------------------------------------------------------
+# Not passed through, because nothing on the far side of the exec can do it:
+# the CLI lives in a read-only image built from the source tree, so "upgrade"
+# in this deployment means rebuild and recreate -- docker commands, runnable
+# only from this side. The in-image `cswap upgrade` prints what to run; this is
+# the copy that runs it.
+#
+# It deliberately does NOT touch the checkout. A `git pull` folded into this
+# would merge whatever upstream has done into a working tree the operator is
+# not looking at, which is not an upgrade, it is a surprise -- and on this fork
+# it would be a 99-commit merge. Updating the source stays a separate, visible
+# act; this command is what turns an updated source tree into a running one.
+#
+# Placed before the container-state check below on purpose: a stopped or
+# missing stack is exactly when a rebuild is wanted, and that check would have
+# refused the one command that fixes it.
+case "${1-}" in
+  upgrade|update|--upgrade)
+    [ "$#" -eq 1 ] || fail "'cswap $1' takes no further arguments here (got: $*)."
+
+    # ~/.local/bin/cswap is a symlink into the repo, and the repo is what gets
+    # rebuilt -- so the compose file is found from this script's real location,
+    # not from ${PWD}, which is wherever the operator happened to be standing.
+    # `readlink -f` is GNU-only on the older macOS this still has to run on, so
+    # walk the links by hand.
+    self=${BASH_SOURCE[0]}
+    while [ -L "${self}" ]; do
+      target=$(readlink "${self}")
+      case "${target}" in
+        /*) self=${target} ;;
+        *)  self=$(cd -P "$(dirname "${self}")" && pwd)/${target} ;;
+      esac
+    done
+    deploy_dir=$(cd -P "$(dirname "${self}")" && pwd)
+
+    [ -f "${deploy_dir}/docker-compose.yml" ] || fail "no docker-compose.yml beside this script.
+  Looked in: ${deploy_dir}
+  Upgrading rebuilds the stack, so the shim has to be the repo's own
+  deploy/cswap-host -- a copy of it somewhere else cannot find the build.
+  Re-link it:  ln -sf <repo>/deploy/cswap-host ~/.local/bin/cswap"
+
+    # Empty when the stack is down, which is fine -- it only labels the result.
+    before=$(docker exec "${CONTAINER}" cswap --version 2>/dev/null | awk '{print $NF}' || true)
+
+    printf 'cswap: rebuilding the image from %s\n' "${deploy_dir%/deploy}"
+    cd "${deploy_dir}" || fail "cannot enter ${deploy_dir}"
+    docker compose up -d --build \
+      || fail "the rebuild failed. Nothing was replaced; the old stack is still what is running."
+
+    after=$(docker exec "${CONTAINER}" cswap --version 2>/dev/null | awk '{print $NF}' || true)
+    if [ -z "${after}" ]; then
+      printf 'cswap: rebuilt, but the new container has not answered --version yet.\n'
+      printf '  Watch it come up:  docker compose -f %s/docker-compose.yml logs -f web\n' \
+        "${deploy_dir}"
+    elif [ "${before}" = "${after}" ]; then
+      # The common surprise: `cswap upgrade` after an update notice, with the
+      # checkout untouched, correctly rebuilds the SAME version. Say so plainly
+      # rather than let it read as a silent no-op.
+      printf 'cswap: rebuilt, still on %s.\n' "${after}"
+      printf '  The image is built from the source tree, so the version moves only when\n'
+      printf '  the source does. Update the checkout first, then run this again.\n'
+    else
+      printf 'cswap: %s -> %s\n' "${before:-(stack was down)}" "${after}"
+    fi
+    exit 0
+    ;;
+esac
+
 # Strip whitespace before matching. For an unknown container `docker inspect`
 # writes an empty line to stdout AND fails, so a bare `|| echo missing` yields
 # "\nmissing", which matches no case arm -- the helpful "start the stack"

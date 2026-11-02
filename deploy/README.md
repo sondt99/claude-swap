@@ -56,22 +56,33 @@ Source changes need `--build`; there is no host install to refresh.
 
 ### Upgrading
 
-`cswap upgrade` cannot upgrade this deployment and will tell you so rather than
-try. The CLI runs inside the image: the rootfs is read-only, the process holds
-your uid rather than root, and `/opt/cswap` was built from this source tree
-instead of installed from PyPI. Even an install that somehow landed in a running
-container would be discarded the next time the container was recreated.
-
-Upgrading here means rebuilding the image:
-
 ```
-git pull
-cd deploy && docker compose up -d --build
+cswap upgrade
 ```
 
-Both services share the one image, so `web` and `auto` are recreated together
-and the dashboard and the autoswitch engine come back on the same build. The
-credential store lives on the host and none of this touches it.
+The shim handles this one on the host rather than passing it into the container,
+because nothing in there can do it: the CLI runs from a read-only image built
+from this source tree, so upgrading means rebuilding and recreating, which is a
+docker command. `cswap upgrade` resolves the repo from its own symlink and runs
+`docker compose up -d --build` in `deploy/`, then reports the version it came
+back on.
+
+It does **not** touch your checkout. Updating the source is a separate, visible
+act -- a `git pull` buried inside an upgrade command would merge upstream into a
+working tree you are not looking at. So the full upgrade is two steps:
+
+```
+git pull          # or merge upstream into the fork
+cswap upgrade
+```
+
+Run only the second and you rebuild the same version; it says so rather than
+looking like a no-op. Both services share the one image, so `web` and `auto` are
+recreated together and the dashboard and the autoswitch engine come back on the
+same build. The credential store lives on the host and none of this touches it.
+
+Running `cswap upgrade` through `docker exec` instead reaches the in-image copy,
+which cannot rebuild anything and prints the host command instead.
 
 ### The `cswap` command
 

@@ -166,9 +166,11 @@ def run_self_upgrade() -> int:
         print(
             "claude-swap is built into the cswap image, so it cannot upgrade "
             "itself from inside the container.\n"
-            "Upgrade on the host, where the image is built from the source tree:\n"
-            f"  {accent('git -C <repo> pull')}\n"
-            f"  {accent('cd <repo>/deploy && docker compose up -d --build')}"
+            "Run `cswap upgrade` on the host instead -- the shim "
+            "(deploy/cswap-host) does\nexactly this, from the repo. By hand "
+            "it is:\n"
+            f"  {accent('cd <repo>/deploy && docker compose up -d --build')}\n"
+            "Either way the version only moves once the source tree has."
         )
         return 1
 
