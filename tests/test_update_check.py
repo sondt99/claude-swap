@@ -164,6 +164,7 @@ class TestDetectInstallMethod:
         # Clear env vars by default so path-based detection runs in isolation.
         monkeypatch.delenv("UV_TOOL_DIR", raising=False)
         monkeypatch.delenv("PIPX_HOME", raising=False)
+        monkeypatch.delenv("CSWAP_INSTALL", raising=False)
 
     def test_uv_tool_default_path(self, monkeypatch):
         self._set_prefix(monkeypatch, "/home/me/.local/share/uv/tools/claude-swap")
@@ -217,6 +218,27 @@ class TestDetectInstallMethod:
         monkeypatch.delenv("UV_TOOL_DIR", raising=False)
         assert _detect_install_method() == "pipx"
 
+    def test_container_marker_detected(self, monkeypatch):
+        # /opt/cswap is an ordinary venv; only deploy/Dockerfile's marker
+        # distinguishes it from a local `python -m venv`.
+        self._set_prefix(monkeypatch, "/opt/cswap")
+        monkeypatch.setenv("CSWAP_INSTALL", "container")
+        assert _detect_install_method() == "container"
+
+    def test_container_marker_wins_over_path(self, monkeypatch):
+        # A uv-shaped prefix inside the image would otherwise send the user to
+        # `uv tool upgrade`, which is not installed there.
+        self._set_prefix(monkeypatch, "/home/me/.local/share/uv/tools/claude-swap")
+        monkeypatch.setenv("CSWAP_INSTALL", "container")
+        assert _detect_install_method() == "container"
+
+    def test_unknown_marker_value_falls_through(self, monkeypatch):
+        # Only the one value means anything; anything else must not suppress
+        # the path-based detection a host install relies on.
+        self._set_prefix(monkeypatch, "/home/me/.local/pipx/venvs/claude-swap")
+        monkeypatch.setenv("CSWAP_INSTALL", "whatever")
+        assert _detect_install_method() == "pipx"
+
 
 class TestCheckForUpdateMessage:
     @patch("claude_swap.update_check.sys.platform", "linux")
@@ -250,6 +272,25 @@ class TestCheckForUpdateMessage:
         assert result is not None
         assert "pipx upgrade claude-swap" in result
         assert "cswap upgrade" not in result
+
+    @patch("claude_swap.update_check.urllib.request.urlopen")
+    def test_container_suggests_cswap_instructions(
+        self, mock_urlopen, tmp_path, monkeypatch
+    ):
+        # No in-place upgrade exists in the image, so the notification must not
+        # name uv or pipx -- `cswap upgrade` prints the rebuild instead.
+        monkeypatch.setattr("claude_swap.update_check.CACHE_PATH", tmp_path / "cache.json")
+        monkeypatch.setattr(
+            "claude_swap.update_check._detect_install_method", lambda: "container"
+        )
+        mock_urlopen.return_value = _make_pypi_response("0.4.0")
+
+        result = check_for_update("0.3.2")
+
+        assert result is not None
+        assert "cswap upgrade` for upgrade instructions" in result
+        assert "uv tool upgrade" not in result
+        assert "pipx upgrade" not in result
 
     @patch("claude_swap.update_check.urllib.request.urlopen")
     def test_unknown_method_suggests_cswap_instructions(
@@ -318,6 +359,21 @@ class TestRunSelfUpgrade:
         err = capsys.readouterr().err
         assert "PATH" in err
 
+    @patch("claude_swap.update_check.subprocess.run")
+    @patch("claude_swap.update_check._detect_install_method", return_value="container")
+    def test_container_prints_rebuild_and_runs_nothing(
+        self, mock_detect, mock_run, capsys
+    ):
+        assert run_self_upgrade() == 1
+        mock_run.assert_not_called()
+        out = capsys.readouterr().out
+        assert "docker compose up -d --build" in out
+        # The four manual commands are all wrong in the image: uv and pipx are
+        # not installed, and pip cannot write a read-only rootfs.
+        assert "uv tool upgrade" not in out
+        assert "pipx upgrade" not in out
+        assert "pip install --upgrade" not in out
+
 
 @patch("claude_swap.update_check.sys.platform", "win32")
 class TestRunSelfUpgradeWindows:
@@ -339,6 +395,17 @@ class TestRunSelfUpgradeWindows:
         mock_run.assert_not_called()
         out = capsys.readouterr().out
         assert "pipx upgrade claude-swap" in out
+
+    @patch("claude_swap.update_check.subprocess.run")
+    @patch("claude_swap.update_check._detect_install_method", return_value="container")
+    def test_container_is_decided_before_platform(self, mock_detect, mock_run, capsys):
+        # The image is Linux whatever the host is, so a Docker Desktop user
+        # must still get the rebuild, not the Windows text.
+        assert run_self_upgrade() == 1
+        mock_run.assert_not_called()
+        out = capsys.readouterr().out
+        assert "docker compose up -d --build" in out
+        assert "on Windows" not in out
 
     @patch("claude_swap.update_check.subprocess.run")
     @patch("claude_swap.update_check._detect_install_method", return_value=None)

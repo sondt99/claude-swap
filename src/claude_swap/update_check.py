@@ -70,7 +70,15 @@ def _is_newer(latest: str, current: str) -> bool:
 
 
 def _detect_install_method() -> str | None:
-    """Return 'uv', 'pipx', or None if we can't tell."""
+    """Return 'uv', 'pipx', 'container', or None if we can't tell."""
+    # Set by deploy/Dockerfile on the image's own venv. There is nothing to
+    # sniff for: /opt/cswap is an ordinary venv, and what makes it unupgradable
+    # is the deployment around it rather than its layout, so the image has to
+    # say so itself. A host install never carries this, and the host shim does
+    # not forward it, so it cannot leak in from the caller's environment.
+    if os.environ.get("CSWAP_INSTALL") == "container":
+        return "container"
+
     prefix = Path(sys.prefix)
     parts = tuple(p.lower() for p in prefix.parts)
     pairs = list(zip(parts, parts[1:]))
@@ -141,12 +149,29 @@ def check_for_update(current_version: str) -> str | None:
 def run_self_upgrade() -> int:
     """Run the appropriate upgrade command for the current install method.
 
-    Returns the subprocess exit code, or 1 if detection failed or the package
-    manager is missing from PATH.
+    Returns the subprocess exit code, or 1 when nothing was run -- detection
+    failed, the package manager is missing from PATH, or the install is one no
+    process inside it can upgrade in place.
     """
     from claude_swap.printer import accent, error
 
     method = _detect_install_method()
+
+    # Deliberately absent from `commands` below: there is no command to run
+    # here, only one to print, and it has to run on the host. Installing into
+    # the image would need root and a writable rootfs, and would then survive
+    # exactly until the next `docker compose up` recreated the container from
+    # the unchanged image.
+    if method == "container":
+        print(
+            "claude-swap is built into the cswap image, so it cannot upgrade "
+            "itself from inside the container.\n"
+            "Upgrade on the host, where the image is built from the source tree:\n"
+            f"  {accent('git -C <repo> pull')}\n"
+            f"  {accent('cd <repo>/deploy && docker compose up -d --build')}"
+        )
+        return 1
+
     commands = {
         "uv": ["uv", "tool", "upgrade", "claude-swap"],
         "pipx": ["pipx", "upgrade", "claude-swap"],

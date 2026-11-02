@@ -62,6 +62,15 @@ COPY --from=builder /opt/cswap /opt/cswap
 RUN python -m compileall -q /usr/local/lib/python3.12 >/dev/null 2>&1 || true
 ENV PATH="/opt/cswap/bin:${PATH}"
 
+# `cswap upgrade` has no move to make from in here, and cannot work that out on
+# its own: /opt/cswap is an ordinary venv, and what rules out an in-place
+# upgrade is everything around it -- a read-only rootfs, a non-root uid, and a
+# tree built from source rather than installed from PyPI, so even an upgrade
+# that somehow landed would be thrown away by the next `docker compose up`.
+# Without this marker the CLI falls back to offering four commands, every one of
+# which fails here. With it, it prints the rebuild instead.
+ENV CSWAP_INSTALL=container
+
 COPY deploy/docker-entrypoint.sh deploy/autoswitch-loop.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh /usr/local/bin/autoswitch-loop.sh
 

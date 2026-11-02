@@ -54,6 +54,25 @@ docker compose down               # stop
 
 Source changes need `--build`; there is no host install to refresh.
 
+### Upgrading
+
+`cswap upgrade` cannot upgrade this deployment and will tell you so rather than
+try. The CLI runs inside the image: the rootfs is read-only, the process holds
+your uid rather than root, and `/opt/cswap` was built from this source tree
+instead of installed from PyPI. Even an install that somehow landed in a running
+container would be discarded the next time the container was recreated.
+
+Upgrading here means rebuilding the image:
+
+```
+git pull
+cd deploy && docker compose up -d --build
+```
+
+Both services share the one image, so `web` and `auto` are recreated together
+and the dashboard and the autoswitch engine come back on the same build. The
+credential store lives on the host and none of this touches it.
+
 ### The `cswap` command
 
 `setup.sh` links it for you. The CLI lives in the image, and `deploy/cswap-host`
